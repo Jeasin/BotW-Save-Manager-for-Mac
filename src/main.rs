@@ -116,8 +116,8 @@ fn action_text(action: SlotAction, info: &SaveInfo) -> String {
         }
         SlotAction::Copy => format!("keep, already {}", info.target().label()),
         SlotAction::KeepDowngrade => "keep, drop newer fields".to_owned(),
-        SlotAction::Drop => "drop, no Wii U version".to_owned(),
-        SlotAction::Blocked => "BLOCKED, no field list for this version".to_owned(),
+        SlotAction::Drop => "drop, unknown newer version".to_owned(),
+        SlotAction::Blocked => "BLOCKED, needs --allow-unsupported".to_owned(),
     }
 }
 

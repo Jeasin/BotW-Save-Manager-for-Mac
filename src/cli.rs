@@ -41,11 +41,14 @@ pub const HELP: &str = concat!(
     "    after validation. Keep a separate backup of any important save.\n",
     "\n",
     "Versions:\n",
-    "    Wii U stops at v1.5 (0x471b). v1.6 (0x471e) and the Switch 2 Edition\n",
-    "    format (0x4730) are byte-order variants of the same record table with a\n",
-    "    few extra fields, so they are converted by dropping those extra fields\n",
-    "    and retagging the header to v1.5. The fields that are dropped are new\n",
-    "    settings this converter knows by hash; progress data is kept.\n",
+    "    Wii U stops at v1.5 (0x471b); later updates shipped on Switch only.\n",
+    "    v1.6 (0x471e) and v1.8/v1.9 (0x4730) are byte-order variants of the same\n",
+    "    record table with a few extra fields, so they are converted by dropping\n",
+    "    those extra fields and retagging the header to v1.5. The dropped fields\n",
+    "    are new settings this converter knows by hash; progress data is kept.\n",
+    "    A version this build has no field list for is refused unless\n",
+    "    --allow-unsupported (downgrade anyway) or --drop-incompatible (leave the\n",
+    "    slot out) is given.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]

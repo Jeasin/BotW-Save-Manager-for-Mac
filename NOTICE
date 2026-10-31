@@ -18,7 +18,7 @@ Added in this port (not present upstream): a reader for the record-table
 container shared by option.sav, game_data.sav and caption.sav, and a downgrade
 path that drops the fields introduced after Wii U 1.5.0 and retags the header
 to 0x471b. The new field hashes were derived by diffing real v1.5 / v1.6 /
-Switch 2 Edition saves, and cross-checked against the format notes of
+v1.8-v1.9 saves, and cross-checked against the format notes of
 https://github.com/fabiangonzalezdev/Universal-BOTW-Save-Manager
 
 This Rust port is distributed under the GNU Affero General Public License,

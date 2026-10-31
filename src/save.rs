@@ -103,7 +103,7 @@ impl SaveInfo {
         }
     }
 
-    /// `v1.5 x4, v1.6 x2, v1.7 Switch 2 Edition x2`
+    /// `v1.5 x4, v1.6 x2, v1.8/v1.9 x2`
     pub fn version_summary(&self) -> String {
         if self.slots.is_empty() {
             return "no game_data.sav".to_owned();
@@ -180,23 +180,22 @@ impl SaveInfo {
             };
         }
 
-        if target == Platform::WiiU {
-            if let Some(raw) = slot.raw_version {
-                if !Platform::is_wii_u_safe(raw) && !Platform::needs_downgrade(raw) {
-                    return if options.drop_incompatible {
-                        SlotAction::Drop
-                    } else {
-                        SlotAction::Blocked
-                    };
+        if downgrade {
+            // A version newer than the field lists this build knows cannot be
+            // downgraded exactly; the caller has to accept that explicitly.
+            let known = slot.raw_version.is_some_and(Platform::has_known_layout);
+            if !known {
+                if options.drop_incompatible {
+                    return SlotAction::Drop;
+                }
+                if !options.allow_unsupported {
+                    return SlotAction::Blocked;
                 }
             }
+            return SlotAction::ConvertDowngrade;
         }
 
-        if downgrade {
-            SlotAction::ConvertDowngrade
-        } else {
-            SlotAction::Convert
-        }
+        SlotAction::Convert
     }
 
     /// Slots that will be left out of the output.
@@ -227,32 +226,35 @@ impl SaveInfo {
         let option_allowed = match (self.option_version, &options.option_sav) {
             // A replacement option.sav is supplied, so the source one is unused.
             (_, Some(_)) => true,
-            (Some(raw), None) => Platform::is_wii_u_safe(raw) || Platform::needs_downgrade(raw),
+            (Some(raw), None) => {
+                Platform::is_wii_u_safe(raw)
+                    || (Platform::needs_downgrade(raw)
+                        && (Platform::has_known_layout(raw) || options.allow_unsupported))
+            }
             (None, None) => true,
         };
 
         if !option_allowed {
             blockers.push(format!(
-                "'{OPTION_FILE}' is {} and this converter has no field list for that version; \
+                "'{OPTION_FILE}' is {} and this build has no field list for that version; \
+                 add --allow-unsupported to downgrade it with the fields it knows, or \
                  pass --option-sav <wiiu-option.sav> to supply a compatible one",
                 self.option_label()
             ));
         }
 
         for slot in &self.slots {
-            if let Some(raw) = slot.raw_version {
-                if !Platform::is_wii_u_safe(raw)
-                    && !Platform::needs_downgrade(raw)
-                    && !options.drop_incompatible
-                {
-                    blockers.push(format!(
-                        "'{}' is {} and this converter has no field list for that version; \
-                         add --drop-incompatible to leave this slot out",
-                        slot.relative_path.display(),
-                        Platform::version_label(raw)
-                    ));
-                }
+            if self.slot_action(slot, options) != SlotAction::Blocked {
+                continue;
             }
+
+            blockers.push(format!(
+                "'{}' is {} and this build has no field list for that version; add \
+                 --allow-unsupported to downgrade it with the fields it knows, or \
+                 --drop-incompatible to leave this slot out",
+                slot.relative_path.display(),
+                slot.version_label()
+            ));
         }
 
         blockers
@@ -317,6 +319,30 @@ impl SaveInfo {
                     "{OPTION_FILE} is {}; its newer fields are dropped to restore the \
                      336-byte v1.5 layout the Wii U release writes",
                     self.option_label()
+                ));
+            }
+
+            let unknown: Vec<&SaveSlot> = self
+                .slots
+                .iter()
+                .filter(|slot| {
+                    slot.raw_version.is_some_and(|raw| {
+                        Platform::needs_downgrade(raw) && !Platform::has_known_layout(raw)
+                    })
+                })
+                .collect();
+
+            if !unknown.is_empty() && !options.drop_incompatible {
+                warnings.push(format!(
+                    "{} slot(s) use a version this build has no field list for ({}); only \
+                     the newer fields with known hashes are dropped, so fields this build \
+                     does not know may survive - check those slots in game",
+                    unknown.len(),
+                    unknown
+                        .iter()
+                        .map(|slot| format!("{} {}", slot.directory, slot.version_label()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ));
             }
 
@@ -815,16 +841,11 @@ pub fn convert_save(
         // fields the target release does not know.
         if data.len() >= 4 && Platform::from_magic(&data[..4]) == Some(source.target()) {
             if needs_downgrade {
-                if let Some(kind) = kind {
-                    let magic = u32::from(WII_U_SAFE_VERSION);
-                    if let Some(rewrite) = records::downgrade(&data, true, kind, magic) {
-                        files_downgraded += 1;
-                        removed_fields += rewrite.removed;
-                        data = rewrite.data;
-                        fs::write(&path, &data)
-                            .map_err(|error| Error::io("write downgraded save", &path, error))?;
-                    }
-                }
+                let kind = downgrade_kind(kind, relative_path)?;
+                removed_fields += apply_downgrade(&mut data, kind, relative_path)?;
+                files_downgraded += 1;
+                fs::write(&path, &data)
+                    .map_err(|error| Error::io("write downgraded save", &path, error))?;
             }
             files_kept += 1;
             continue;
@@ -833,14 +854,9 @@ pub fn convert_save(
         convert_sav_bytes(&mut data, is_trackblock);
 
         if needs_downgrade {
-            if let Some(kind) = kind {
-                let magic = u32::from(WII_U_SAFE_VERSION);
-                if let Some(rewrite) = records::downgrade(&data, true, kind, magic) {
-                    files_downgraded += 1;
-                    removed_fields += rewrite.removed;
-                    data = rewrite.data;
-                }
-            }
+            let kind = downgrade_kind(kind, relative_path)?;
+            removed_fields += apply_downgrade(&mut data, kind, relative_path)?;
+            files_downgraded += 1;
         }
 
         if data.len() > original_len {
@@ -980,6 +996,35 @@ fn is_conflict_copy(name: &str) -> bool {
 fn header_version(data: &[u8]) -> Option<u16> {
     let header = data.get(..4)?;
     Platform::from_magic(header)?.version_code(header)
+}
+
+/// Refuses to leave a newer header in place on a file this build cannot rewrite.
+fn downgrade_kind(kind: Option<Kind>, relative: &Path) -> Result<Kind> {
+    kind.ok_or_else(|| {
+        Error::UnsupportedSave(format!(
+            "'{}' carries a version newer than the Wii U release but is not a record table \
+             this build can rewrite",
+            relative.display()
+        ))
+    })
+}
+
+/// Drops the fields the Wii U release does not know and retags the header.
+/// Returns how many records were removed.
+fn apply_downgrade(data: &mut Vec<u8>, kind: Kind, relative: &Path) -> Result<usize> {
+    let magic = u32::from(WII_U_SAFE_VERSION);
+
+    match records::downgrade(data, true, kind, magic) {
+        Some(rewrite) => {
+            *data = rewrite.data;
+            Ok(rewrite.removed)
+        }
+        None => Err(Error::UnsupportedSave(format!(
+            "'{}' needs downgrading but its record table could not be read; the container \
+             may have changed in that version",
+            relative.display()
+        ))),
+    }
 }
 
 fn read_header(path: &Path) -> Result<Option<[u8; 4]>> {

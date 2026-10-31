@@ -8,9 +8,11 @@ pub enum Platform {
 
 /// Last save header the Wii U release of the game ever wrote (v1.5, 0x471b).
 ///
-/// Version 1.6.0 (0x471e) shipped only on Switch (Nintendo Labo VR support) and
-/// 0x4730 only on later Switch releases / the Switch 2 Edition. Neither exists
-/// on Wii U.
+/// The Wii U version stopped receiving updates at 1.5.0; Nintendo states that
+/// nothing from 1.6.0 onwards was released for it. Every later header therefore
+/// describes a Switch-only layout: 0x471e is v1.6.0 (Switch, Labo VR) and
+/// 0x4730 covers v1.8.x / v1.9.x, the updates that shipped alongside the Switch
+/// 2 (Thai text, bug fixes) but which the plain Switch also receives.
 pub const WII_U_SAFE_VERSION: u16 = 0x471b;
 
 const VERSION_HEADERS: [(u16, &str); 9] = [
@@ -22,8 +24,11 @@ const VERSION_HEADERS: [(u16, &str); 9] = [
     (0x471a, "v1.4"),
     (0x471b, "v1.5"),
     (0x471e, "v1.6"),
-    (0x4730, "v1.9 Switch 2 Edition"),
+    (0x4730, "v1.8/v1.9"),
 ];
+
+/// Headers whose extra fields this build knows by hash.
+const KNOWN_NEWER_HEADERS: [u16; 2] = [0x471e, 0x4730];
 
 impl Platform {
     pub fn label(self) -> &'static str {
@@ -60,7 +65,7 @@ impl Platform {
     /// Both platforms store the same 16-bit version code, only the byte order
     /// differs: Wii U writes `00 00 47 xx`, Switch writes `xx 47 00 00`.
     /// Matching the shape instead of a fixed list keeps newer versions such as
-    /// the Switch 2 Edition (`xx = 0x30`) detectable.
+    /// the v1.8/v1.9 layout (`xx = 0x30`) detectable.
     pub fn from_magic(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 4 {
             return None;
@@ -119,7 +124,13 @@ impl Platform {
     ///
     /// 0x471e adds one field, 0x4730 adds five; both keep the same container.
     pub fn needs_downgrade(raw: u16) -> bool {
-        matches!(raw, 0x471e | 0x4730)
+        raw > WII_U_SAFE_VERSION
+    }
+
+    /// True when this build knows exactly which fields the version added, so a
+    /// downgrade leaves nothing unknown behind.
+    pub fn has_known_layout(raw: u16) -> bool {
+        KNOWN_NEWER_HEADERS.contains(&raw)
     }
 }
 
@@ -157,7 +168,7 @@ mod tests {
         );
         assert_eq!(
             Platform::Switch.version_from_header(&[0x30, 0x47, 0x00, 0x00]),
-            Some("v1.9 Switch 2 Edition")
+            Some("v1.8/v1.9")
         );
     }
 
@@ -167,8 +178,12 @@ mod tests {
         assert!(!Platform::is_wii_u_safe(0x471e));
         assert!(Platform::needs_downgrade(0x471e));
         assert!(Platform::needs_downgrade(0x4730));
+        assert!(Platform::needs_downgrade(0x4800), "any newer header");
         assert!(!Platform::needs_downgrade(0x471b));
         assert!(!Platform::needs_downgrade(0x471a));
+        assert!(Platform::has_known_layout(0x471e));
+        assert!(Platform::has_known_layout(0x4730));
+        assert!(!Platform::has_known_layout(0x4800));
     }
 
     #[test]

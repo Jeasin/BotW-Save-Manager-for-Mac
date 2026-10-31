@@ -28,7 +28,7 @@ pub const TERMINATOR: u32 = 0xffff_ffff;
 /// Fields that exist in `game_data.sav` only after Wii U 1.5.0.
 ///
 /// `0xf3316abb` arrived with v1.6 (Switch-only, Labo VR). The other four are
-/// new in the Switch 2 Edition format. Removing exactly these five turns a
+/// new in the v1.8/v1.9 layout. Removing exactly these five turns a
 /// newer `game_data.sav` back into the record set of a native v1.5.0 save:
 /// measured on real saves, every known hash lands on its v1.5 offset again.
 pub const NEWER_GAME_DATA_FIELDS: [u32; 5] = [

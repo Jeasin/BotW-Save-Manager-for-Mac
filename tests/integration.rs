@@ -19,9 +19,9 @@ const V19: u16 = 0x4730;
 
 /// A field that only exists from v1.6 on.
 const V16_FIELD: u32 = 0xf331_6abb;
-/// A `game_data.sav` field that only exists in the Switch 2 Edition format.
+/// A `game_data.sav` field that only exists in the v1.8/v1.9 layout.
 const V19_FIELD: u32 = 0x6213_3c14;
-/// An `option.sav` field that only exists in the Switch 2 Edition format.
+/// An `option.sav` field that only exists in the v1.8/v1.9 layout.
 const V19_OPTION_FIELD: u32 = 0x1c8a_3035;
 
 struct TestDirectory {
@@ -129,7 +129,7 @@ fn make_save(root: &Path, unknown_version: bool) -> Vec<u8> {
     game_data
 }
 
-/// A Switch 2 Edition save: every record table uses the 0x4730 header and
+/// A save from the v1.8/v1.9 update: every record table uses the 0x4730 header
 /// carries the fields that only exist after v1.5.
 fn make_newer_save(root: &Path) {
     fs::create_dir_all(root.join("7")).unwrap();
@@ -232,7 +232,7 @@ fn downgrades_a_newer_save_to_the_v1_5_layout() {
 
     let info = inspect_save(&input).unwrap();
     assert_eq!(info.platform, Platform::Switch);
-    assert_eq!(info.version_summary(), "v1.9 Switch 2 Edition x1");
+    assert_eq!(info.version_summary(), "v1.8/v1.9 x1");
     assert!(info.blockers(&ConvertOptions::default()).is_empty());
 
     let report = convert_save(&info, &output, &ConvertOptions::default()).unwrap();
@@ -494,6 +494,101 @@ fn rejects_an_option_file_from_the_wrong_platform() {
     let error = convert_save(&info, &output, &options).unwrap_err();
     assert!(
         error.to_string().contains("is a Switch option.sav"),
+        "{error}"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn refuses_an_unknown_newer_version_until_asked() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("future");
+    let output = temporary.path().join("wiiu");
+    fs::create_dir_all(input.join("0")).unwrap();
+    fs::write(
+        input.join("option.sav"),
+        record_table(V15, Platform::Switch, &[(0x1111, 1)]),
+    )
+    .unwrap();
+    fs::write(
+        input.join("0/game_data.sav"),
+        record_table(0x4740, Platform::Switch, &[(0xaaaa, 7), (V19_FIELD, 3)]),
+    )
+    .unwrap();
+
+    let info = inspect_save(&input).unwrap();
+    assert_eq!(info.version_summary(), "unknown 0x4740 x1");
+
+    let error = try_convert(&input, &output, &ConvertOptions::default()).unwrap_err();
+    assert!(error.to_string().contains("--allow-unsupported"), "{error}");
+    assert!(!output.exists());
+
+    let options = ConvertOptions {
+        allow_unsupported: true,
+        ..ConvertOptions::default()
+    };
+    let report = convert(&input, Some(&output), &options);
+    assert_eq!(report.files_downgraded, 1);
+
+    let converted = fs::read(output.join("0/game_data.sav")).unwrap();
+    assert_eq!(&converted[..4], &Platform::WiiU.magic());
+    assert_eq!(converted, record_table(V15, Platform::WiiU, &[(0xaaaa, 7)]));
+}
+
+#[test]
+fn leaves_out_a_slot_with_an_unknown_newer_version() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("future");
+    let output = temporary.path().join("wiiu");
+    fs::create_dir_all(input.join("0")).unwrap();
+    fs::create_dir_all(input.join("1")).unwrap();
+    fs::write(
+        input.join("option.sav"),
+        record_table(V15, Platform::Switch, &[(0x1111, 1)]),
+    )
+    .unwrap();
+    fs::write(
+        input.join("0/game_data.sav"),
+        record_table(V15, Platform::Switch, &[(0xaaaa, 7)]),
+    )
+    .unwrap();
+    fs::write(
+        input.join("1/game_data.sav"),
+        record_table(0x4740, Platform::Switch, &[(0xbbbb, 7)]),
+    )
+    .unwrap();
+
+    let options = ConvertOptions {
+        drop_incompatible: true,
+        ..ConvertOptions::default()
+    };
+    let info = inspect_save(&input).unwrap();
+    let report = convert_save(&info, &output, &options).unwrap();
+
+    assert_eq!(report.dropped, vec![PathBuf::from("1")]);
+    assert!(output.join("0/game_data.sav").is_file());
+    assert!(!output.join("1").exists());
+}
+
+#[test]
+fn fails_loudly_when_a_newer_file_is_not_a_record_table() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("broken");
+    let output = temporary.path().join("wiiu");
+    fs::create_dir_all(input.join("0")).unwrap();
+    fs::write(
+        input.join("option.sav"),
+        record_table(V15, Platform::Switch, &[(0x1111, 1)]),
+    )
+    .unwrap();
+
+    let mut broken = vec![0x30, 0x47, 0x00, 0x00];
+    broken.extend_from_slice(&[0x11; 40]);
+    fs::write(input.join("0/game_data.sav"), &broken).unwrap();
+
+    let error = try_convert(&input, &output, &ConvertOptions::default()).unwrap_err();
+    assert!(
+        error.to_string().contains("record table could not be read"),
         "{error}"
     );
     assert!(!output.exists());

@@ -6,7 +6,7 @@
 
 > **验证状态**：两个方向都已用真实存档验证。
 > Wii U → Switch：Cemu 存档转换后，0–3 号槽位与同一进度的 Ryujinx 存档逐字节一致。
-> Switch → Wii U：一份 Switch 2 Edition 存档（8 个槽位，v1.5 / v1.6 / v1.9 混排）转换后，8 个槽位与 Cemu 原生 Wii U 存档的**记录序列（128399 条）逐条对齐**，`option.sav` 为 336 字节 / 40 条记录，全部槽位头部为 `00 00 47 1b`。
+> Switch → Wii U：一份 1.9.0 存档（8 个槽位，v1.5 / v1.6 / v1.8-v1.9 混排）转换后，8 个槽位与 Cemu 原生 Wii U 存档的**记录序列（128399 条）逐条对齐**，`option.sav` 为 336 字节 / 40 条记录，全部槽位头部为 `00 00 47 1b`。
 > 尚未在真机上完成导入测试，首次使用请仍然保留原始备份。
 
 ## 特性
@@ -22,7 +22,7 @@
 - 支持 `--dry-run` 预检
 - 未知游戏版本默认拒绝转换，可用显式开关放行
 - 区分 v1.0 – v1.9，说明每个版本的平台限制
-- **Switch → Wii U 时会自动降级**：把 v1.6 / Switch 2 Edition 存档里 Wii U 不认识的字段丢掉、头部改回 v1.5，使它变成 Wii U 能读的记录集
+- **Switch → Wii U 时会自动降级**：把 v1.6 / v1.8-v1.9 存档里 Wii U 不认识的字段丢掉、头部改回 v1.5，使它变成 Wii U 能读的记录集
 
 ## 构建
 
@@ -80,26 +80,26 @@ botw-convert ~/Downloads/zelda-save ~/Downloads/out/zelda-switch
 ```text
 Source   : /Users/me/Downloads/202610311719-backup-astris-002
 Save type: Switch (NS) save
-option   : v1.9 Switch 2 Edition (920 bytes)
-Versions : v1.5 x4, v1.6 x2, v1.9 Switch 2 Edition x2
+option   : v1.8/v1.9 (920 bytes)
+Versions : v1.5 x4, v1.6 x2, v1.8/v1.9 x2
 Target   : Wii U
 Output   : /Users/me/Downloads/202610311719-backup-astris-002-wiiu
 Files    : 69 .sav (8 slots, 52 trackers, 8 captions, 1 option)
 
-Slot  Stored    Version                    Bytes  Action
-0     Switch    v1.5                     1027208  convert to Wii U
-1     Switch    v1.5                     1027208  convert to Wii U
-2     Switch    v1.5                     1027208  convert to Wii U
-3     Switch    v1.5                     1027208  convert to Wii U
-4     Wii U     v1.6                     1027216  keep, drop newer fields
-5     Wii U     v1.6                     1027216  keep, drop newer fields
-6     Switch    v1.9 Switch 2 Edition    1027248  convert to Wii U, drop newer fields
-7     Switch    v1.9 Switch 2 Edition    1027248  convert to Wii U, drop newer fields
+Slot  Stored    Version        Bytes  Action
+0     Switch    v1.5         1027208  convert to Wii U
+1     Switch    v1.5         1027208  convert to Wii U
+2     Switch    v1.5         1027208  convert to Wii U
+3     Switch    v1.5         1027208  convert to Wii U
+4     Wii U     v1.6         1027216  keep, drop newer fields
+5     Wii U     v1.6         1027216  keep, drop newer fields
+6     Switch    v1.8/v1.9    1027248  convert to Wii U, drop newer fields
+7     Switch    v1.8/v1.9    1027248  convert to Wii U, drop newer fields
 warning: 4 slot(s) use a save format newer than the Wii U release (4 v1.6, 5 v1.6,
-         6 v1.9 Switch 2 Edition, 7 v1.9 Switch 2 Edition); their extra fields are
-         dropped and the header is rewritten to v1.5
-warning: option.sav is v1.9 Switch 2 Edition; its newer fields are dropped to
-         restore the 336-byte v1.5 layout the Wii U release writes
+         6 v1.8/v1.9, 7 v1.8/v1.9); their extra fields are dropped and the header
+         is rewritten to v1.5
+warning: option.sav is v1.8/v1.9; its newer fields are dropped to restore the
+         336-byte v1.5 layout the Wii U release writes
 
 Done. Converted 65 .sav to Wii U format.
       Kept 4 .sav that were already Wii U.
@@ -142,9 +142,11 @@ Wii U → Switch 和 Switch → Wii U 使用同一个命令，工具会根据 `o
 |---|---|---|---|---|
 | v1.5 | `0x471b` | ✅ 最终版本 | ✅ | 双向转换最稳妥 |
 | v1.6 | `0x471e` | ⚠️ 无此更新 | ✅ | 仅 Switch 有（Labo VR），转 Wii U 时丢 1 个字段 |
-| v1.9 Switch 2 Edition | `0x4730` | ⚠️ 无此更新 | ✅ | 转 Wii U 时丢 5 个字段（`game_data.sav`） |
+| v1.8 / v1.9 | `0x4730` | ⚠️ 无此更新 | ✅ | 转 Wii U 时丢 5 个字段（`game_data.sav`） |
 
-Wii U 版的最后一次更新是 2018-01 的 1.5.0。1.6.0 只在 Switch 上发布，Switch 2 Edition 的存档格式只存在于 Switch 2 Edition。
+Wii U 版的最后一次更新是 2018-01 的 1.5.0，任天堂官方也写明 Wii U 版没有 1.6.0 及之后的更新。1.6.0（Labo VR）与 1.8/1.9（随 Switch 2 一起推送的泰语支持与修 bug，Switch 同样收到）都只面向 Switch 系。
+
+`0x4730` 这个头部同时覆盖 1.8.x 与 1.9.x，社区编辑器（marcrobledo 的 BOTW 编辑器）也是把它们合并成一条 `v1.8/v1.9`，存档本身无法区分。
 
 ### 新版本存档如何转成 Wii U（降级）
 
@@ -164,7 +166,7 @@ Wii U 版的最后一次更新是 2018-01 的 1.5.0。1.6.0 只在 Switch 上发
 2. 把头部版本号改成 `0x471b`；
 3. 其余记录原封不动保留（进度、物品、地图数据都在这些记录里）。
 
-以实测的 Switch 2 Edition 存档为例：
+以实测的 1.9.0 存档为例：
 
 | 文件 | 原始 | 降级后 | 丢掉 |
 |---|---|---|---|
@@ -174,9 +176,25 @@ Wii U 版的最后一次更新是 2018-01 的 1.5.0。1.6.0 只在 Switch 上发
 
 降级后的 8 个槽位与 Cemu 原生 Wii U 存档的记录哈希序列**逐条一致**（128399 条全等），说明容器结构完全对齐。
 
-被丢掉的字段是游戏设置类的新条目（例如 Switch 2 Edition 新增的选项），不是进度数据；代价是这些新设置项在 Wii U 上不存在，回到 Switch 时也不会被还原。
+被丢掉的字段是游戏设置类的新条目（例如 1.8/1.9 新增的选项），不是进度数据；代价是这些新设置项在 Wii U 上不存在，回到 Switch 时也不会被还原。
 
 `--option-sav` 仍然保留，作为“我手上就有一份 Wii U `option.sav`，直接用它”的覆盖手段；不指定时工具会自己降级源文件。
+
+### 为什么有些槽位是“混排”的
+
+判据只有一条，但足够硬：**平台字节序是游戏自己写死的**。Switch 版永远写小端（头部 `xx 47 00 00`），Wii U 版永远写大端（头部 `00 00 47 xx`）。一个 Switch 存档里出现大端文件（或反过来），只可能是转换器或手工拷贝放进去的，游戏本身不可能写出对方平台的字节序。
+
+实测的两份存档就是这种情况：
+
+| 槽位 | Ryujinx（Switch 存档） | Cemu（Wii U 存档） | 结论 |
+|---|---|---|---|
+| 0–3 | `1b 47 00 00` 小端 v1.5 | `00 00 47 1b` 大端 v1.5 | 正常 |
+| 4–5 | `00 00 47 1e` **大端** v1.6 | `1e 47 00 00` **小端** v1.6 | 两边都放了对方的格式 |
+| 6–7 | `30 47 00 00` 小端 v1.8/v1.9 | `00 00 47 1b` 大端 v1.5 | 正常 |
+
+再校验一层：把 Ryujinx 的 4/5 用同一算法翻回小端，和 Cemu 的 4/5 对比，**sha256 完全相同**（`68d13cbc…`、`56eb3401…`）——同一份数据的两种字节序。同样，Ryujinx 的 0–3 与“Cemu 转 Switch”的输出逐字节相同，说明整份 Ryujinx 存档就是从 Cemu 存档转过去的，而 4/5 是被某次转换留在了对方字节序里。
+
+因此处理方式是：**已经是目标平台字节序的文件只复制、不翻转**，需要时再降级；否则二次翻转会直接把存档写坏。
 
 ## 安全设计
 
@@ -204,7 +222,8 @@ Wii U 版的最后一次更新是 2018-01 的 1.5.0。1.6.0 只在 Switch 上发
 
 - 只处理已经导出/解密、包含 `option.sav` 的存档文件夹；不直接读取主机内部存储或加密容器。
 - 降级只丢弃“Wii U 版本不认识的设置类字段”，不改写游戏进度；但被丢弃的新设置项无法在回到 Switch 后自动还原。
-- 版本表覆盖 v1.0、v1.1、v1.2、v1.3、v1.3.3、v1.4、v1.5、v1.6，以及 **v1.9 Switch 2 Edition（0x4730）**。更晚的版本号如果只是同一容器加了新字段，可以用 `--allow-unsupported` 尝试，但工具没有对应字段表时不会降级。
+- 版本表覆盖 v1.0、v1.1、v1.2、v1.3、v1.3.3、v1.4、v1.5、v1.6、v1.8/v1.9（`0x4730`）。更晚的版本号（任意大于 `0x471b` 的头）默认被拒绝：加 `--allow-unsupported` 会按已知字段表降级，加 `--drop-incompatible` 则把这些槽位排除在输出之外。
+- 被改造过的存档（社区编辑器里标成 `v1.6*`、魔数为 `0x0f423d`/`0x0f423e`/`0x0f423f` 那类）头部超出 `0x47xx` 形状，会被当成无法识别，需要用 `--allow-unsupported` 放行。
 - 存档目录中可以混有“已经是另一平台格式”的槽位（例如之前转换过或手工合并过）。这些文件不会被再次翻转，工具会以 warning 列出。
 - 首次在真实设备上使用前，请保留一份未改动的原始存档。
 
