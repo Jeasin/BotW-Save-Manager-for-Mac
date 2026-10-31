@@ -425,7 +425,7 @@ Switch → Wii U, including a 1.9.0 save that has to be downgraded:
 
 ![Terminal screenshot: bsmm converting a Switch save to Wii U, where four slots are newer than the Wii U release and get their extra fields dropped](assets/switch-to-wiiu.webp)
 
-Both screenshots were taken before the rename, when the command was still called `botw-convert`. The current command is `bsmm`; the output is unchanged.
+That output comes from real saves; the user's home directory is masked.
 
 ## What it does
 
