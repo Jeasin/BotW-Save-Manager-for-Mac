@@ -3,10 +3,10 @@
 use botw_save_convert::cli::{Command, HELP, parse_args};
 use botw_save_convert::error::Result;
 use botw_save_convert::save::{
-    ConvertReport, SaveInfo, convert_save, inspect_save, validate_output_path,
+    ConvertReport, SaveInfo, convert_save, default_output_path, inspect_save, validate_output_path,
 };
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 fn main() {
@@ -32,8 +32,10 @@ fn run() -> i32 {
             println!("botw-convert {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Command::Run(args) if args.dry_run => run_dry(&args.input, &args.output),
-        Command::Run(args) => run_conversion(&args.input, &args.output, args.allow_unsupported),
+        Command::Run(args) if args.dry_run => run_dry(&args.input, args.output.as_deref()),
+        Command::Run(args) => {
+            run_conversion(&args.input, args.output.as_deref(), args.allow_unsupported)
+        }
     };
 
     match result {
@@ -45,23 +47,34 @@ fn run() -> i32 {
     }
 }
 
-fn run_dry(input: &Path, output: &Path) -> Result<()> {
+fn resolve_output(info: &SaveInfo, requested: Option<&Path>) -> Result<PathBuf> {
+    match requested {
+        Some(path) => Ok(path.to_path_buf()),
+        None => default_output_path(&info.root, info.target()),
+    }
+}
+
+fn run_dry(input: &Path, output: Option<&Path>) -> Result<()> {
     let info = inspect_save(input)?;
-    let output = validate_output_path(&info.root, output)?;
-    print_summary(&info, &output);
+    let requested = resolve_output(&info, output)?;
+    print_summary(&info, &requested);
     print_warnings(&info);
 
-    if info.has_unsupported_versions() {
+    if let Some(reason) = info.wii_u_blocker() {
+        eprintln!("note: {reason}");
+    } else if info.has_unknown_versions() {
         eprintln!(
-            "note: conversion requires --allow-unsupported because the game version is unknown or mixed"
+            "note: conversion requires --allow-unsupported because the game version is unknown"
         );
     }
+
+    validate_output_path(&info.root, &requested, false)?;
 
     println!("\nDry run: nothing was written.");
     Ok(())
 }
 
-fn run_conversion(input: &Path, output: &Path, allow_unsupported: bool) -> Result<()> {
+fn run_conversion(input: &Path, output: Option<&Path>, allow_unsupported: bool) -> Result<()> {
     let report = convert_save(input, output, allow_unsupported)?;
     print_report(&report);
     Ok(())
@@ -69,18 +82,25 @@ fn run_conversion(input: &Path, output: &Path, allow_unsupported: bool) -> Resul
 
 fn print_summary(info: &SaveInfo, output: &Path) {
     println!(
-        "Source : {} ({})",
-        info.platform.label(),
+        "Detected : {} save ({})",
+        info.platform.display_label(),
         info.version_summary()
     );
-    println!("Target : {}", info.target().label());
-    println!("Files  : {} .sav files", info.sav_files.len());
-    println!("Output : {}", output.display());
+    println!("Target   : {}", info.target().display_label());
+    println!("Files    : {} .sav", info.sav_files.len());
+    println!("Output   : {}", output.display());
 }
 
 fn print_report(report: &ConvertReport) {
     print_summary(&report.source, &report.output);
     print_warnings(&report.source);
+    if report.sav_files_skipped > 0 {
+        println!(
+            "Skipped  : {} .sav already in {} format (copied unchanged)",
+            report.sav_files_skipped,
+            report.target.label()
+        );
+    }
     println!(
         "\nDone. Converted {} .sav files ({} files copied total) to {} format.",
         report.sav_files_converted,

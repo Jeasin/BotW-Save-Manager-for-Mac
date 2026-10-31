@@ -10,28 +10,35 @@ pub const HELP: &str = concat!(
     "Convert Breath of the Wild save folders between Wii U and Switch.\n",
     "\n",
     "Usage:\n",
-    "    botw-convert [OPTIONS] <INPUT_DIR> <OUTPUT_DIR>\n",
+    "    botw-convert [OPTIONS] <INPUT_DIR> [OUTPUT_DIR]\n",
     "\n",
     "Arguments:\n",
     "    <INPUT_DIR>     Folder containing option.sav and the save slots\n",
-    "    <OUTPUT_DIR>    New folder to create for the converted save\n",
+    "    [OUTPUT_DIR]    Folder to create for the converted save (must not exist).\n",
+    "                    Omit it to create a sibling folder named\n",
+    "                    <input>-switch or <input>-wiiu next to the input.\n",
     "\n",
     "Options:\n",
     "    -n, --dry-run               Inspect the save without writing anything\n",
-    "        --allow-unsupported     Convert even if versions are unknown or mixed\n",
+    "        --allow-unsupported     Convert even if the game version is unknown\n",
     "    -h, --help                  Print this help\n",
     "    -V, --version               Print the version\n",
     "\n",
     "Safety:\n",
-    "    The input folder is never modified. OUTPUT_DIR must not already exist.\n",
+    "    The input folder is never modified. An existing OUTPUT_DIR is never\n",
+    "    overwritten. Missing parent directories of OUTPUT_DIR are created.\n",
     "    Conversion runs in a temporary folder and is moved into place only\n",
     "    after validation. Keep a separate backup of any important save.\n",
+    "\n",
+    "Limits:\n",
+    "    Switch 2 Edition saves (v1.7, 0x4730) have no Wii U equivalent and\n",
+    "    are rejected for the Switch -> Wii U direction.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Args {
     pub input: PathBuf,
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
     pub dry_run: bool,
     pub allow_unsupported: bool,
 }
@@ -80,16 +87,19 @@ where
         positional.push(argument);
     }
 
-    if positional.len() != 2 {
+    if positional.is_empty() || positional.len() > 2 {
         return Err(format!(
-            "expected 2 paths (input and output), got {}",
+            "expected 1 or 2 paths (input and optional output), got {}",
             positional.len()
         ));
     }
 
+    let input = PathBuf::from(positional.remove(0));
+    let output = positional.pop().map(PathBuf::from);
+
     Ok(Command::Run(Args {
-        input: PathBuf::from(positional.remove(0)),
-        output: PathBuf::from(positional.remove(0)),
+        input,
+        output,
         dry_run,
         allow_unsupported,
     }))
@@ -111,8 +121,21 @@ mod tests {
             parse_args(args(&["--dry-run", "in", "out"])).unwrap(),
             Command::Run(Args {
                 input: PathBuf::from("in"),
-                output: PathBuf::from("out"),
+                output: Some(PathBuf::from("out")),
                 dry_run: true,
+                allow_unsupported: false,
+            })
+        );
+    }
+
+    #[test]
+    fn output_is_optional() {
+        assert_eq!(
+            parse_args(args(&["in"])).unwrap(),
+            Command::Run(Args {
+                input: PathBuf::from("in"),
+                output: None,
+                dry_run: false,
                 allow_unsupported: false,
             })
         );
@@ -124,7 +147,7 @@ mod tests {
             parse_args(args(&["--", "-input", "-output"])).unwrap(),
             Command::Run(Args {
                 input: PathBuf::from("-input"),
-                output: PathBuf::from("-output"),
+                output: Some(PathBuf::from("-output")),
                 dry_run: false,
                 allow_unsupported: false,
             })
@@ -140,7 +163,7 @@ mod tests {
     #[test]
     fn rejects_bad_arguments() {
         assert!(parse_args(args(&["--wat", "in", "out"])).is_err());
-        assert!(parse_args(args(&["in"])).is_err());
+        assert!(parse_args(args(&[])).is_err());
         assert!(parse_args(args(&["in", "out", "extra"])).is_err());
     }
 }

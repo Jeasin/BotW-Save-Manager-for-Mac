@@ -6,7 +6,14 @@ pub enum Platform {
     Switch,
 }
 
-const VERSION_HEADERS: [(u16, &str); 8] = [
+/// Highest save header this tool will write for Wii U (v1.6).
+///
+/// The Wii U release stopped at 1.5.0; v1.6 only shipped on Switch, and v1.7
+/// and later (Switch 2 Edition) have no Wii U equivalent at all. Allowing 1.6
+/// keeps the Switch -> Wii U path that the original tool supports working.
+const WII_U_MAX_VERSION: u16 = 0x471e;
+
+const VERSION_HEADERS: [(u16, &str); 9] = [
     (0x24e2, "v1.0"),
     (0x24ee, "v1.1"),
     (0x2588, "v1.2"),
@@ -15,6 +22,7 @@ const VERSION_HEADERS: [(u16, &str); 8] = [
     (0x471a, "v1.4"),
     (0x471b, "v1.5"),
     (0x471e, "v1.6"),
+    (0x4730, "v1.7 Switch 2 Edition"),
 ];
 
 impl Platform {
@@ -22,6 +30,14 @@ impl Platform {
         match self {
             Self::WiiU => "Wii U",
             Self::Switch => "Switch",
+        }
+    }
+
+    /// Label used in user-facing status lines.
+    pub fn display_label(self) -> &'static str {
+        match self {
+            Self::WiiU => "Wii U",
+            Self::Switch => "Switch (NS)",
         }
     }
 
@@ -39,35 +55,56 @@ impl Platform {
         }
     }
 
+    /// Identifies the platform from an `option.sav` header.
+    ///
+    /// Both platforms store the same 16-bit version code, only the byte order
+    /// differs: Wii U writes `00 00 47 xx`, Switch writes `xx 47 00 00`.
+    /// Matching the shape instead of a fixed list keeps newer versions such as
+    /// the Switch 2 Edition (`xx = 0x30`) detectable.
     pub fn from_magic(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 4 {
             return None;
         }
 
-        match u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) {
-            0x1b47_0000 => Some(Self::WiiU),
-            0x0000_471b => Some(Self::Switch),
-            _ => None,
+        if bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0x47 {
+            Some(Self::WiiU)
+        } else if bytes[1] == 0x47 && bytes[2] == 0 && bytes[3] == 0 {
+            Some(Self::Switch)
+        } else {
+            None
         }
     }
 
-    /// Reads the game version from the first four bytes of game_data.sav.
-    ///
-    /// This mirrors the original C# implementation: Wii U headers are read as
-    /// a big-endian 32-bit value and Switch headers as a little-endian value.
-    pub fn version_from_header(self, header: &[u8]) -> Option<&'static str> {
+    /// Reads the raw 16-bit version code from the first four bytes of a save.
+    pub fn version_code(self, header: &[u8]) -> Option<u16> {
         if header.len() < 4 {
             return None;
         }
 
-        let raw = match self {
+        Some(match self {
             Self::Switch => u16::from_le_bytes([header[0], header[1]]),
             Self::WiiU => u16::from_le_bytes([header[3], header[2]]),
-        };
+        })
+    }
+
+    /// Reads the game version from the first four bytes of `game_data.sav`
+    /// or `option.sav`.
+    pub fn version_from_header(self, header: &[u8]) -> Option<&'static str> {
+        let raw = self.version_code(header)?;
 
         VERSION_HEADERS
             .iter()
             .find_map(|(value, name)| (*value == raw).then_some(*name))
+    }
+
+    pub fn version_name(raw: u16) -> Option<&'static str> {
+        VERSION_HEADERS
+            .iter()
+            .find_map(|(value, name)| (*value == raw).then_some(*name))
+    }
+
+    pub fn is_wii_u_compatible(raw: u16) -> bool {
+        raw <= WII_U_MAX_VERSION
     }
 }
 
@@ -85,7 +122,12 @@ mod tests {
             Platform::from_magic(&[0x1b, 0x47, 0x00, 0x00]),
             Some(Platform::Switch)
         );
+        assert_eq!(
+            Platform::from_magic(&[0x30, 0x47, 0x00, 0x00]),
+            Some(Platform::Switch)
+        );
         assert_eq!(Platform::from_magic(&[0x00, 0x00, 0x00, 0x00]), None);
+        assert_eq!(Platform::from_magic(&[0x47, 0x1b, 0x00, 0x00]), None);
     }
 
     #[test]
@@ -98,6 +140,16 @@ mod tests {
             Platform::WiiU.version_from_header(&[0x00, 0x00, 0x47, 0x1e]),
             Some("v1.6")
         );
+        assert_eq!(
+            Platform::Switch.version_from_header(&[0x30, 0x47, 0x00, 0x00]),
+            Some("v1.7 Switch 2 Edition")
+        );
+    }
+
+    #[test]
+    fn marks_switch_2_edition_as_beyond_wii_u() {
+        assert!(Platform::is_wii_u_compatible(0x471e));
+        assert!(!Platform::is_wii_u_compatible(0x4730));
     }
 
     #[test]
