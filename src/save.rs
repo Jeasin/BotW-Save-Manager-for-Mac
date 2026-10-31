@@ -2,7 +2,8 @@
 
 use crate::convert::convert_sav_bytes;
 use crate::error::{Error, Result};
-use crate::platform::Platform;
+use crate::platform::{Platform, WII_U_SAFE_VERSION};
+use crate::records::{self, Kind};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -18,8 +19,14 @@ const GAME_DATA_FILE: &str = "game_data.sav";
 pub enum SlotAction {
     /// Byte order is swapped into the target platform.
     Convert,
+    /// Byte order is swapped and the newer fields are dropped so the Wii U
+    /// release sees a v1.5 record set.
+    ConvertDowngrade,
     /// Slot already uses the target platform's byte order; copied untouched.
     Copy,
+    /// Slot already uses the target platform's byte order but carries newer
+    /// fields, which are dropped.
+    KeepDowngrade,
     /// Slot cannot exist on the target platform and will be left out.
     Drop,
     /// Slot cannot exist on the target platform and no flag allows dropping it.
@@ -162,14 +169,20 @@ impl SaveInfo {
 
     pub fn slot_action(&self, slot: &SaveSlot, options: &ConvertOptions) -> SlotAction {
         let target = self.target();
+        let downgrade =
+            target == Platform::WiiU && slot.raw_version.is_some_and(Platform::needs_downgrade);
 
         if slot.platform == Some(target) {
-            return SlotAction::Copy;
+            return if downgrade {
+                SlotAction::KeepDowngrade
+            } else {
+                SlotAction::Copy
+            };
         }
 
         if target == Platform::WiiU {
             if let Some(raw) = slot.raw_version {
-                if !Platform::is_wii_u_allowed(raw) {
+                if !Platform::is_wii_u_safe(raw) && !Platform::needs_downgrade(raw) {
                     return if options.drop_incompatible {
                         SlotAction::Drop
                     } else {
@@ -179,7 +192,11 @@ impl SaveInfo {
             }
         }
 
-        SlotAction::Convert
+        if downgrade {
+            SlotAction::ConvertDowngrade
+        } else {
+            SlotAction::Convert
+        }
     }
 
     /// Slots that will be left out of the output.
@@ -210,13 +227,13 @@ impl SaveInfo {
         let option_allowed = match (self.option_version, &options.option_sav) {
             // A replacement option.sav is supplied, so the source one is unused.
             (_, Some(_)) => true,
-            (Some(raw), None) => Platform::is_wii_u_allowed(raw),
+            (Some(raw), None) => Platform::is_wii_u_safe(raw) || Platform::needs_downgrade(raw),
             (None, None) => true,
         };
 
         if !option_allowed {
             blockers.push(format!(
-                "'{OPTION_FILE}' is {} but a Wii U copy of the game cannot read it; \
+                "'{OPTION_FILE}' is {} and this converter has no field list for that version; \
                  pass --option-sav <wiiu-option.sav> to supply a compatible one",
                 self.option_label()
             ));
@@ -224,9 +241,12 @@ impl SaveInfo {
 
         for slot in &self.slots {
             if let Some(raw) = slot.raw_version {
-                if !Platform::is_wii_u_allowed(raw) && !options.drop_incompatible {
+                if !Platform::is_wii_u_safe(raw)
+                    && !Platform::needs_downgrade(raw)
+                    && !options.drop_incompatible
+                {
                     blockers.push(format!(
-                        "'{}' is {} and has no Wii U equivalent; \
+                        "'{}' is {} and this converter has no field list for that version; \
                          add --drop-incompatible to leave this slot out",
                         slot.relative_path.display(),
                         Platform::version_label(raw)
@@ -270,17 +290,34 @@ impl SaveInfo {
         }
 
         if self.target() == Platform::WiiU {
-            for slot in &self.slots {
-                if let Some(raw) = slot.raw_version {
-                    if Platform::is_wii_u_allowed(raw) && !Platform::is_wii_u_safe(raw) {
-                        warnings.push(format!(
-                            "'{}' is {}; the Wii U release stopped at v1.5 and may \
-                             refuse this slot",
-                            slot.relative_path.display(),
-                            Platform::version_label(raw)
-                        ));
-                    }
-                }
+            let newer: Vec<&SaveSlot> = self
+                .slots
+                .iter()
+                .filter(|slot| slot.raw_version.is_some_and(Platform::needs_downgrade))
+                .collect();
+
+            if !newer.is_empty() {
+                warnings.push(format!(
+                    "{} slot(s) use a save format newer than the Wii U release ({}); their \
+                     extra fields are dropped and the header is rewritten to v1.5, so the \
+                     Wii U game sees the record set it knows",
+                    newer.len(),
+                    newer
+                        .iter()
+                        .map(|slot| format!("{} {}", slot.directory, slot.version_label()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+
+            if self.option_version.is_some_and(Platform::needs_downgrade)
+                && options.option_sav.is_none()
+            {
+                warnings.push(format!(
+                    "{OPTION_FILE} is {}; its newer fields are dropped to restore the \
+                     336-byte v1.5 layout the Wii U release writes",
+                    self.option_label()
+                ));
             }
 
             let dropped = self.slots_to_drop(options);
@@ -326,6 +363,11 @@ pub struct ConvertReport {
     pub files_copied: usize,
     pub files_converted: usize,
     pub files_kept: usize,
+    /// Files whose header and record set were rewritten to the v1.5 layout.
+    pub files_downgraded: usize,
+    /// Records removed while downgrading (newer fields the Wii U release has
+    /// no slot for).
+    pub removed_fields: usize,
     pub dropped: Vec<PathBuf>,
     pub option_replaced: bool,
     pub output: PathBuf,
@@ -463,10 +505,23 @@ pub fn file_decisions(
         let detected = header
             .as_ref()
             .and_then(|header| Platform::from_magic(header));
-        let action = if detected == Some(info.target()) {
-            SlotAction::Copy
-        } else {
-            SlotAction::Convert
+        let version = match (detected, &header) {
+            (Some(platform), Some(header)) => platform.version_code(header),
+            _ => None,
+        };
+        let downgrade = info.target() == Platform::WiiU
+            && version.is_some_and(Platform::needs_downgrade)
+            && relative
+                .file_name()
+                .and_then(OsStr::to_str)
+                .and_then(Kind::from_name)
+                .is_some();
+
+        let action = match (detected == Some(info.target()), downgrade) {
+            (true, true) => SlotAction::KeepDowngrade,
+            (true, false) => SlotAction::Copy,
+            (false, true) => SlotAction::ConvertDowngrade,
+            (false, false) => SlotAction::Convert,
         };
 
         decisions.push((relative.clone(), action));
@@ -517,6 +572,31 @@ fn strip_platform_suffix(name: &OsStr) -> &OsStr {
     }
 
     name
+}
+
+/// Lightweight destination check for `--dry-run`.
+///
+/// A dry run must also work on a folder that was already converted, so an
+/// occupied destination is returned as a warning instead of an error.
+pub fn output_warning(input: &Path, output: &Path) -> Option<String> {
+    let absolute = absolute_path(output).ok()?;
+    let input_canonical = fs::canonicalize(input).ok()?;
+
+    if absolute.starts_with(&input_canonical) {
+        return Some(
+            "the output folder cannot be inside the input folder; a real run would refuse"
+                .to_owned(),
+        );
+    }
+
+    if absolute.exists() {
+        return Some(format!(
+            "'{}' already exists; a real run would refuse to overwrite it",
+            absolute.display()
+        ));
+    }
+
+    None
 }
 
 /// Validates the destination and returns its absolute path.
@@ -630,7 +710,7 @@ pub fn validate_option_override(path: &Path, target: Platform) -> Result<Vec<u8>
 
     if target == Platform::WiiU {
         if let Some(raw) = detected.version_code(&header) {
-            if !Platform::is_wii_u_allowed(raw) {
+            if !Platform::is_wii_u_safe(raw) {
                 return Err(Error::InvalidInput(format!(
                     "'{}' is {}, which a Wii U copy of the game cannot read",
                     path.display(),
@@ -706,6 +786,8 @@ pub fn convert_save(
 
     let mut files_converted = 0usize;
     let mut files_kept = 0usize;
+    let mut files_downgraded = 0usize;
+    let mut removed_fields = 0usize;
 
     for relative_path in &source.sav_files {
         if dropped_dirs
@@ -719,22 +801,51 @@ pub fn convert_save(
         let mut data =
             fs::read(&path).map_err(|error| Error::io("read save file", &path, error))?;
         let original_len = data.len();
+        let is_trackblock = path.to_string_lossy().contains("trackblock");
+        let kind = relative_path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .and_then(Kind::from_name);
+        let needs_downgrade = source.target() == Platform::WiiU
+            && header_version(&data).is_some_and(Platform::needs_downgrade);
 
         // A file that already carries the target platform's byte order was
         // converted earlier (or imported from the other platform). Swapping it
-        // again would corrupt it, so copy it through untouched.
+        // again would corrupt it, so it is only rewritten if it still carries
+        // fields the target release does not know.
         if data.len() >= 4 && Platform::from_magic(&data[..4]) == Some(source.target()) {
+            if needs_downgrade {
+                if let Some(kind) = kind {
+                    let magic = u32::from(WII_U_SAFE_VERSION);
+                    if let Some(rewrite) = records::downgrade(&data, true, kind, magic) {
+                        files_downgraded += 1;
+                        removed_fields += rewrite.removed;
+                        data = rewrite.data;
+                        fs::write(&path, &data)
+                            .map_err(|error| Error::io("write downgraded save", &path, error))?;
+                    }
+                }
+            }
             files_kept += 1;
             continue;
         }
 
-        let is_trackblock = path.to_string_lossy().contains("trackblock");
-
         convert_sav_bytes(&mut data, is_trackblock);
 
-        if data.len() != original_len {
+        if needs_downgrade {
+            if let Some(kind) = kind {
+                let magic = u32::from(WII_U_SAFE_VERSION);
+                if let Some(rewrite) = records::downgrade(&data, true, kind, magic) {
+                    files_downgraded += 1;
+                    removed_fields += rewrite.removed;
+                    data = rewrite.data;
+                }
+            }
+        }
+
+        if data.len() > original_len {
             return Err(Error::Verification(format!(
-                "the size of '{}' changed during conversion",
+                "the size of '{}' grew during conversion",
                 relative_path.display()
             )));
         }
@@ -753,6 +864,8 @@ pub fn convert_save(
         files_copied,
         files_converted,
         files_kept,
+        files_downgraded,
+        removed_fields,
         dropped: dropped_dirs,
         option_replaced: replacement.is_some(),
         output,
@@ -805,6 +918,11 @@ fn verify_converted_save(
         let Some(expected) = source_slot.raw_version else {
             continue;
         };
+        let expected = if target == Platform::WiiU && Platform::needs_downgrade(expected) {
+            WII_U_SAFE_VERSION
+        } else {
+            expected
+        };
 
         let converted_slot = converted
             .slots
@@ -855,6 +973,13 @@ fn is_conflict_copy(name: &str) -> bool {
         || lower.contains("-copy")
         || lower.contains(" copy")
         || lower.ends_with(".bak")
+}
+
+/// Reads the version code from a file's own header, whatever byte order it is
+/// currently stored in.
+fn header_version(data: &[u8]) -> Option<u16> {
+    let header = data.get(..4)?;
+    Platform::from_magic(header)?.version_code(header)
 }
 
 fn read_header(path: &Path) -> Result<Option<[u8; 4]>> {
@@ -1024,10 +1149,38 @@ impl TemporaryDirectory {
             Err(error) => return Err(Error::io("inspect output path", target, error)),
         }
 
-        fs::rename(&self.path, target)
-            .map_err(|error| Error::io("move converted save into place", target, error))?;
-        self.armed = false;
-        Ok(())
+        match fs::rename(&self.path, target) {
+            Ok(()) => {
+                self.armed = false;
+                Ok(())
+            }
+            // macOS denies the rename itself in two situations that still allow
+            // writing files: `~/Downloads` and `~/Desktop` sit behind a privacy
+            // prompt, and sandboxed shells deny `rename` with EPERM while
+            // allowing `create` and `write`. Copying the finished tree keeps the
+            // output where the user asked for it; `target` was proven absent
+            // above, so nothing can be overwritten.
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                fs::create_dir(target).map_err(|error| {
+                    Error::io(
+                        "create the output folder - macOS may be blocking this location, \
+                         check System Settings > Privacy & Security > Files and Folders",
+                        target,
+                        error,
+                    )
+                })?;
+
+                if let Err(error) = copy_directory(&self.path, target, &[]) {
+                    let _ = fs::remove_dir_all(target);
+                    return Err(error);
+                }
+
+                let _ = fs::remove_dir_all(&self.path);
+                self.armed = false;
+                Ok(())
+            }
+            Err(error) => Err(Error::io("move converted save into place", target, error)),
+        }
     }
 }
 

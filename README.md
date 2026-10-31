@@ -4,7 +4,10 @@
 
 这是 [DeltaJordan/BotW-Save-Manager](https://github.com/DeltaJordan/BotW-Save-Manager) 的 Rust 重实现，只保留命令行转换功能，不依赖 .NET、GUI 或任何第三方 Rust crate。
 
-> **验证状态**：算法已用真实存档验证。Cemu 的 Wii U 存档转换后，0–3 号槽位与同一进度的 Ryujinx Switch 存档逐字节一致。尚未在真机上完成导入测试，首次使用请仍然保留原始备份。
+> **验证状态**：两个方向都已用真实存档验证。
+> Wii U → Switch：Cemu 存档转换后，0–3 号槽位与同一进度的 Ryujinx 存档逐字节一致。
+> Switch → Wii U：一份 Switch 2 Edition 存档（8 个槽位，v1.5 / v1.6 / v1.9 混排）转换后，8 个槽位与 Cemu 原生 Wii U 存档的**记录序列（128399 条）逐条对齐**，`option.sav` 为 336 字节 / 40 条记录，全部槽位头部为 `00 00 47 1b`。
+> 尚未在真机上完成导入测试，首次使用请仍然保留原始备份。
 
 ## 特性
 
@@ -18,8 +21,8 @@
 - 已是目标平台字节序的文件原样复制，不会二次翻转
 - 支持 `--dry-run` 预检
 - 未知游戏版本默认拒绝转换，可用显式开关放行
-- 区分 v1.5 / v1.6 / v1.7，并说明每个版本的平台限制
-- 识别 Switch 2 Edition（v1.7）并给出明确说明，而不是报“未知文件”
+- 区分 v1.0 – v1.9，说明每个版本的平台限制
+- **Switch → Wii U 时会自动降级**：把 v1.6 / Switch 2 Edition 存档里 Wii U 不认识的字段丢掉、头部改回 v1.5，使它变成 Wii U 能读的记录集
 
 ## 构建
 
@@ -72,25 +75,37 @@ botw-convert ~/Downloads/zelda-save
 botw-convert ~/Downloads/zelda-save ~/Downloads/out/zelda-switch
 ```
 
-输出目录必须尚不存在；缺失的父目录会自动创建。转换前后的报告形如：
+输出目录必须尚不存在；缺失的父目录会自动创建。一次 Switch → Wii U 的实际报告：
 
 ```text
-Source   : /Users/me/Downloads/202610311720-backup-cemu-801
-Save type: Wii U save
-option   : v1.5 (336 bytes)
-Versions : v1.5 x6, v1.6 x2
-Target   : Switch (NS)
-Output   : /Users/me/Downloads/202610311720-backup-cemu-801-switch
-Files    : 86 .sav (8 slots, 51 trackers, 8 captions, 1 option, 18 duplicate copies)
+Source   : /Users/me/Downloads/202610311719-backup-astris-002
+Save type: Switch (NS) save
+option   : v1.9 Switch 2 Edition (920 bytes)
+Versions : v1.5 x4, v1.6 x2, v1.9 Switch 2 Edition x2
+Target   : Wii U
+Output   : /Users/me/Downloads/202610311719-backup-astris-002-wiiu
+Files    : 69 .sav (8 slots, 52 trackers, 8 captions, 1 option)
 
-Slot  Stored    Version      Bytes  Action
-0     Wii U     v1.5       1027208  convert to Switch
-1     Wii U     v1.5       1027208  convert to Switch
-...
-4     Switch    v1.6       1027216  keep, already Switch
-5     Switch    v1.6       1027216  keep, already Switch
-6     Wii U     v1.5       1027208  convert to Switch
-7     Wii U     v1.5       1027208  convert to Switch
+Slot  Stored    Version                    Bytes  Action
+0     Switch    v1.5                     1027208  convert to Wii U
+1     Switch    v1.5                     1027208  convert to Wii U
+2     Switch    v1.5                     1027208  convert to Wii U
+3     Switch    v1.5                     1027208  convert to Wii U
+4     Wii U     v1.6                     1027216  keep, drop newer fields
+5     Wii U     v1.6                     1027216  keep, drop newer fields
+6     Switch    v1.9 Switch 2 Edition    1027248  convert to Wii U, drop newer fields
+7     Switch    v1.9 Switch 2 Edition    1027248  convert to Wii U, drop newer fields
+warning: 4 slot(s) use a save format newer than the Wii U release (4 v1.6, 5 v1.6,
+         6 v1.9 Switch 2 Edition, 7 v1.9 Switch 2 Edition); their extra fields are
+         dropped and the header is rewritten to v1.5
+warning: option.sav is v1.9 Switch 2 Edition; its newer fields are dropped to
+         restore the 336-byte v1.5 layout the Wii U release writes
+
+Done. Converted 65 .sav to Wii U format.
+      Kept 4 .sav that were already Wii U.
+      Downgraded 9 file(s) to the v1.5 layout (85 newer field(s) dropped).
+      210 files copied in total.
+      Output: /Users/me/Downloads/202610311719-backup-astris-002-wiiu
 ```
 
 各列含义：
@@ -101,7 +116,9 @@ Slot  Stored    Version      Bytes  Action
 | `Slot` | 槽位目录名，即 `game_data.sav` 所在的文件夹 |
 | `Stored` | 该文件**自身头部**显示的平台，可能和整个存档不一致 |
 | `Version` | 从文件头读出的游戏版本 |
-| `Action` | `convert` 翻转字节序、`keep` 原样复制、`drop` 不写入输出、`BLOCKED` 无法转换 |
+| `Action` | `convert` 翻转字节序、`keep` 原样复制、`drop` 不写入输出、`BLOCKED` 无法转换；带 `drop newer fields` 表示同时降级 |
+
+`--dry-run` 不会因为输出目录已存在而失败，只给出 warning，方便反复预检。
 
 Wii U → Switch 和 Switch → Wii U 使用同一个命令，工具会根据 `option.sav` 自动判断方向。
 
@@ -110,47 +127,63 @@ Wii U → Switch 和 Switch → Wii U 使用同一个命令，工具会根据 `o
 ```text
 -n, --dry-run              只检查，不写入任何文件
     --allow-unsupported    允许未知游戏版本继续转换
-    --drop-incompatible    Switch → Wii U 时，跳过 Wii U 无法承载的槽位（v1.7+）
+    --drop-incompatible    Switch → Wii U 时，跳过没有字段表、无法降级的槽位
     --option-sav <FILE>    Switch → Wii U 时，用指定的 Wii U option.sav 覆盖输出
 -v, --verbose              列出每个 .sav 的处理方式
 -h, --help                 显示帮助
 -V, --version              显示版本
 ```
 
-退出码：`0` 成功，`1` 失败，`2` 参数错误，`3` 存档不受支持（例如没有 Wii U 对应版本的 v1.7 存档）。
+退出码：`0` 成功，`1` 失败，`2` 参数错误，`3` 存档不受支持（版本号无法识别，且没有加 `--allow-unsupported`）。
 
 ## 版本对照
 
 | 版本 | 头部 | Wii U | Switch | 说明 |
 |---|---|---|---|---|
 | v1.5 | `0x471b` | ✅ 最终版本 | ✅ | 双向转换最稳妥 |
-| v1.6 | `0x471e` | ⚠️ 无此更新 | ✅ | 仅 Switch 有（Labo VR），转为 Wii U 时会警告 |
-| v1.7 | `0x4730` | ❌ | ✅ | Switch 2 Edition，`option.sav` 结构已改变 |
+| v1.6 | `0x471e` | ⚠️ 无此更新 | ✅ | 仅 Switch 有（Labo VR），转 Wii U 时丢 1 个字段 |
+| v1.9 Switch 2 Edition | `0x4730` | ⚠️ 无此更新 | ✅ | 转 Wii U 时丢 5 个字段（`game_data.sav`） |
 
-Wii U 版的最后一次更新是 2018-01 的 1.5.0。1.6.0 只在 Switch 上发布，1.7 及以后只存在于 Switch 2 Edition。
+Wii U 版的最后一次更新是 2018-01 的 1.5.0。1.6.0 只在 Switch 上发布，Switch 2 Edition 的存档格式只存在于 Switch 2 Edition。
 
-### Switch 2 Edition 存档怎么处理
+### 新版本存档如何转成 Wii U（降级）
 
-v1.7 的 `option.sav` 是 920 字节 / 110 条记录，Wii U 的是 336 字节 / 37 条记录，两者不是简单字节序差异，**无法通过翻转字节得到合法的 Wii U 文件**。工具默认拒绝，并逐条列出阻塞的文件。
+`option.sav`、`game_data.sav`、`caption.sav` 用的是**同一个容器**：
 
-如果该存档中仍有 Wii U 能读的槽位（例如 v1.5），可以显式降级迁移：
-
-```bash
-botw-convert --drop-incompatible \
-  --option-sav /path/to/wiiu-save/option.sav \
-  /path/to/switch-save \
-  /path/to/switch-save-wiiu
+```text
+0x00  u32  版本号
+0x04  u32  不变
+0x08  u32  不变
+0x0c  ...  { u32 字段哈希; u32 值 } 重复
+末尾  u32  0xffffffff 终止符
 ```
 
-- `--option-sav` 必须是**已经存在的 Wii U `option.sav`**（可以来自你自己的旧 Wii U/Cemu 存档）。
-- `--drop-incompatible` 会让 v1.7 槽位不进入输出，并在结束时列出被舍弃的槽位。
-- 这样做会**丢失**这些槽位的进度，且 `option.sav` 来自另一份存档，槽位显示可能与该存档当时的记录一致；导入前务必确认。
+它是**按哈希索引的键值表**，不是固定偏移，所以“新版本”只是在同一张表里多了若干条记录。降级的做法因此很直接：
+
+1. 丢掉 Wii U 版不认识的字段（`game_data.sav` 5 个、`option.sav` 10 个哈希）；
+2. 把头部版本号改成 `0x471b`；
+3. 其余记录原封不动保留（进度、物品、地图数据都在这些记录里）。
+
+以实测的 Switch 2 Edition 存档为例：
+
+| 文件 | 原始 | 降级后 | 丢掉 |
+|---|---|---|---|
+| `game_data.sav` | 1027248 B / 128404 条 | 1027208 B / 128399 条 | 5 条（40 B） |
+| `option.sav` | 920 B / 113 条 | 336 B / 40 条 | 73 条（10 个哈希，含数组/字符串块） |
+| `caption.sav` | 1528 B | 1528 B | 无，只改版本号 |
+
+降级后的 8 个槽位与 Cemu 原生 Wii U 存档的记录哈希序列**逐条一致**（128399 条全等），说明容器结构完全对齐。
+
+被丢掉的字段是游戏设置类的新条目（例如 Switch 2 Edition 新增的选项），不是进度数据；代价是这些新设置项在 Wii U 上不存在，回到 Switch 时也不会被还原。
+
+`--option-sav` 仍然保留，作为“我手上就有一份 Wii U `option.sav`，直接用它”的覆盖手段；不指定时工具会自己降级源文件。
 
 ## 安全设计
 
 - 输入目录不会被修改。
 - 输出目录必须不存在，避免误覆盖已有文件；缺失的父目录会自动创建。
 - 转换在输出目录同级的隐藏临时目录中进行，全部成功并通过结构校验后才重命名为目标目录；失败时会清理临时目录。
+- macOS 有时会拒绝“重命名文件夹”却允许写入（`~/Downloads`、`~/Desktop` 有隐私弹窗，沙箱环境直接返回 EPERM）。这时工具改为把已完成的临时目录**复制**到目标位置，再删掉临时目录，结果一致。
 - 输出目录不能位于输入目录内部。
 - 不跟随符号链接，遇到符号链接会直接拒绝。
 - 转换后会重新读取输出，逐槽位确认平台字节序和游戏版本号没有改变。
@@ -170,8 +203,8 @@ botw-convert --drop-incompatible \
 ## 限制
 
 - 只处理已经导出/解密、包含 `option.sav` 的存档文件夹；不直接读取主机内部存储或加密容器。
-- 不做游戏版本升级或降级（`--drop-incompatible` 只是舍弃槽位，不改写版本号）。
-- 支持原工具列出的版本：v1.0、v1.1、v1.2、v1.3、v1.3.3、v1.4、v1.5、v1.6，另外可识别 **v1.7 Switch 2 Edition（0x4730）**。
+- 降级只丢弃“Wii U 版本不认识的设置类字段”，不改写游戏进度；但被丢弃的新设置项无法在回到 Switch 后自动还原。
+- 版本表覆盖 v1.0、v1.1、v1.2、v1.3、v1.3.3、v1.4、v1.5、v1.6，以及 **v1.9 Switch 2 Edition（0x4730）**。更晚的版本号如果只是同一容器加了新字段，可以用 `--allow-unsupported` 尝试，但工具没有对应字段表时不会降级。
 - 存档目录中可以混有“已经是另一平台格式”的槽位（例如之前转换过或手工合并过）。这些文件不会被再次翻转，工具会以 warning 列出。
 - 首次在真实设备上使用前，请保留一份未改动的原始存档。
 
@@ -183,7 +216,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-测试包含转换常量检查、平台/版本识别、哈希与物品分支、trackblock 特殊处理、逐槽位动作判定、完整目录转换、`--option-sav` 覆盖、输出保护以及 CLI 退出码。
+测试包含转换常量检查、平台/版本识别、哈希与物品分支、trackblock 特殊处理、记录表解析与降级、逐槽位动作判定、完整目录转换、`--option-sav` 覆盖、输出保护以及 CLI 退出码。
 
 ## 许可证与署名
 

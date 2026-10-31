@@ -4,7 +4,7 @@ use botw_save_convert::cli::{Args, Command, HELP, parse_args};
 use botw_save_convert::error::{Error, Result};
 use botw_save_convert::save::{
     ConvertOptions, ConvertReport, SaveInfo, SlotAction, convert_save, default_output_path,
-    file_decisions, inspect_save, validate_output_path,
+    file_decisions, inspect_save, output_warning,
 };
 use std::env;
 use std::path::Path;
@@ -78,7 +78,9 @@ fn run_command(args: &Args) -> Result<()> {
     }
 
     if args.dry_run {
-        validate_output_path(&info.root, &requested, false)?;
+        if let Some(warning) = output_warning(&info.root, &requested) {
+            eprintln!("warning: {warning}");
+        }
         println!("\nDry run: nothing was written.");
         return Ok(());
     }
@@ -109,9 +111,13 @@ fn print_summary(info: &SaveInfo, output: &Path) {
 fn action_text(action: SlotAction, info: &SaveInfo) -> String {
     match action {
         SlotAction::Convert => format!("convert to {}", info.target().label()),
+        SlotAction::ConvertDowngrade => {
+            format!("convert to {}, drop newer fields", info.target().label())
+        }
         SlotAction::Copy => format!("keep, already {}", info.target().label()),
+        SlotAction::KeepDowngrade => "keep, drop newer fields".to_owned(),
         SlotAction::Drop => "drop, no Wii U version".to_owned(),
-        SlotAction::Blocked => "BLOCKED, no Wii U version".to_owned(),
+        SlotAction::Blocked => "BLOCKED, no field list for this version".to_owned(),
     }
 }
 
@@ -159,6 +165,8 @@ fn print_files(info: &SaveInfo, options: &ConvertOptions) -> Result<()> {
     for (path, action) in file_decisions(info, options)? {
         let label = match action {
             SlotAction::Copy => "keep",
+            SlotAction::KeepDowngrade => "keep, downgrade",
+            SlotAction::ConvertDowngrade => "convert, downgrade",
             _ => "convert",
         };
         println!("  {:<52} {label}", path.display());
@@ -178,6 +186,12 @@ fn print_report(report: &ConvertReport) {
             "      Kept {} .sav that were already {}.",
             report.files_kept,
             report.target.label()
+        );
+    }
+    if report.files_downgraded > 0 {
+        println!(
+            "      Downgraded {} file(s) to the v1.5 layout ({} newer field(s) dropped).",
+            report.files_downgraded, report.removed_fields
         );
     }
     if !report.dropped.is_empty() {

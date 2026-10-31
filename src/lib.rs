@@ -4,6 +4,7 @@ pub mod cli;
 pub mod convert;
 pub mod error;
 pub mod platform;
+pub mod records;
 pub mod save;
 
 pub use error::{Error, Result};

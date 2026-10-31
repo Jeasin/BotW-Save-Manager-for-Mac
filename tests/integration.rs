@@ -12,6 +12,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Header versions used by the fixtures.
+const V15: u16 = 0x471b;
+const V16: u16 = 0x471e;
+const V19: u16 = 0x4730;
+
+/// A field that only exists from v1.6 on.
+const V16_FIELD: u32 = 0xf331_6abb;
+/// A `game_data.sav` field that only exists in the Switch 2 Edition format.
+const V19_FIELD: u32 = 0x6213_3c14;
+/// An `option.sav` field that only exists in the Switch 2 Edition format.
+const V19_OPTION_FIELD: u32 = 0x1c8a_3035;
+
 struct TestDirectory {
     path: PathBuf,
 }
@@ -61,22 +73,48 @@ fn try_convert(
     convert_save(&info, output, options)
 }
 
+fn push_word(out: &mut Vec<u8>, value: u32, big_endian: bool) {
+    if big_endian {
+        out.extend_from_slice(&value.to_be_bytes());
+    } else {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+/// Builds the record-table container the game uses for option.sav,
+/// game_data.sav and caption.sav.
+fn record_table(version: u16, platform: Platform, records: &[(u32, u32)]) -> Vec<u8> {
+    let big_endian = platform == Platform::WiiU;
+    let mut out = Vec::new();
+
+    push_word(&mut out, u32::from(version), big_endian);
+    push_word(&mut out, 0xffff_ffff, big_endian);
+    push_word(&mut out, 1, big_endian);
+    for (hash, value) in records {
+        push_word(&mut out, *hash, big_endian);
+        push_word(&mut out, *value, big_endian);
+    }
+    push_word(&mut out, 0xffff_ffff, big_endian);
+
+    out
+}
+
 fn make_save(root: &Path, unknown_version: bool) -> Vec<u8> {
     fs::create_dir_all(root.join("0")).unwrap();
 
     fs::write(
         root.join("option.sav"),
-        [0x00, 0x00, 0x47, 0x1b, 0x11, 0x22, 0x33, 0x44],
+        record_table(V15, Platform::WiiU, &[(0x1111, 1), (0x2222, 2)]),
     )
     .unwrap();
 
-    let header = if unknown_version {
-        [0x00, 0x00, 0x00, 0x00]
+    let game_data = if unknown_version {
+        let mut data = vec![0, 0, 0, 0];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        data
     } else {
-        [0x00, 0x00, 0x47, 0x1e]
+        record_table(V15, Platform::WiiU, &[(0xaaaa, 7), (0xbbbb, 9)])
     };
-    let mut game_data = header.to_vec();
-    game_data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
     fs::write(root.join("0/game_data.sav"), &game_data).unwrap();
 
     fs::write(
@@ -91,52 +129,28 @@ fn make_save(root: &Path, unknown_version: bool) -> Vec<u8> {
     game_data
 }
 
-/// A minimal Switch 2 Edition save: option.sav and one slot both use the
-/// v1.7 header (0x4730).
-fn make_switch_2_save(root: &Path) {
+/// A Switch 2 Edition save: every record table uses the 0x4730 header and
+/// carries the fields that only exist after v1.5.
+fn make_newer_save(root: &Path) {
     fs::create_dir_all(root.join("7")).unwrap();
 
     fs::write(
         root.join("option.sav"),
-        [
-            0x30, 0x47, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
-        ],
+        record_table(
+            V19,
+            Platform::Switch,
+            &[(0x1111, 1), (0x2222, 2), (V19_OPTION_FIELD, 5)],
+        ),
     )
     .unwrap();
 
     fs::write(
         root.join("7/game_data.sav"),
-        [
-            0x30, 0x47, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
-        ],
-    )
-    .unwrap();
-}
-
-/// A Switch save that mixes a v1.5 slot with a v1.7 (Switch 2 Edition) one.
-fn make_mixed_switch_save(root: &Path) {
-    fs::create_dir_all(root.join("0")).unwrap();
-    fs::create_dir_all(root.join("7")).unwrap();
-
-    fs::write(
-        root.join("option.sav"),
-        [
-            0x30, 0x47, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
-        ],
-    )
-    .unwrap();
-
-    fs::write(
-        root.join("0/game_data.sav"),
-        [0x1b, 0x47, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04],
-    )
-    .unwrap();
-
-    fs::write(
-        root.join("7/game_data.sav"),
-        [
-            0x30, 0x47, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
-        ],
+        record_table(
+            V19,
+            Platform::Switch,
+            &[(0xaaaa, 7), (V16_FIELD, 1), (V19_FIELD, 3)],
+        ),
     )
     .unwrap();
 }
@@ -155,6 +169,7 @@ fn converts_a_wii_u_save_and_leaves_the_source_untouched() {
     assert_eq!(report.files_converted, 3);
     assert_eq!(report.files_copied, 3);
     assert_eq!(report.files_kept, 0);
+    assert_eq!(report.files_downgraded, 0);
 
     assert_eq!(fs::read(input.join("option.sav")).unwrap(), original_option);
     assert_eq!(
@@ -167,12 +182,15 @@ fn converts_a_wii_u_save_and_leaves_the_source_untouched() {
     );
 
     let converted = fs::read(output.join("0/game_data.sav")).unwrap();
-    assert_eq!(&converted[..4], &[0x1e, 0x47, 0x00, 0x00]);
-    assert_eq!(&converted[4..8], &[0x04, 0x03, 0x02, 0x01]);
+    assert_eq!(
+        converted,
+        record_table(V15, Platform::Switch, &[(0xaaaa, 7), (0xbbbb, 9)]),
+        "the record table must only change byte order"
+    );
 
     let inspection = inspect_save(&output).unwrap();
     assert_eq!(inspection.platform, Platform::Switch);
-    assert_eq!(inspection.version_summary(), "v1.6 x1");
+    assert_eq!(inspection.version_summary(), "v1.5 x1");
 }
 
 #[test]
@@ -201,6 +219,83 @@ fn converts_back_to_wii_u_byte_for_byte() {
     assert_eq!(
         fs::read(round_trip.join("0/trackblock_0.sav")).unwrap(),
         original_trackblock
+    );
+}
+
+#[test]
+fn downgrades_a_newer_save_to_the_v1_5_layout() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("switch2");
+    let output = temporary.path().join("wiiu");
+    make_newer_save(&input);
+    let source_size = fs::metadata(input.join("7/game_data.sav")).unwrap().len();
+
+    let info = inspect_save(&input).unwrap();
+    assert_eq!(info.platform, Platform::Switch);
+    assert_eq!(info.version_summary(), "v1.9 Switch 2 Edition x1");
+    assert!(info.blockers(&ConvertOptions::default()).is_empty());
+
+    let report = convert_save(&info, &output, &ConvertOptions::default()).unwrap();
+
+    assert_eq!(report.target, Platform::WiiU);
+    assert_eq!(report.files_downgraded, 2, "option.sav and slot 7");
+    assert_eq!(report.removed_fields, 3, "two in game_data, one in option");
+
+    let converted = fs::read(output.join("7/game_data.sav")).unwrap();
+    assert_eq!(&converted[..4], &Platform::WiiU.magic());
+    assert_eq!(
+        converted,
+        record_table(V15, Platform::WiiU, &[(0xaaaa, 7)]),
+        "both newer records must be gone"
+    );
+    assert_eq!(
+        converted.len() as u64,
+        source_size - 16,
+        "two records must be gone"
+    );
+
+    let option = fs::read(output.join("option.sav")).unwrap();
+    assert_eq!(&option[..4], &Platform::WiiU.magic());
+    assert_eq!(
+        option,
+        record_table(V15, Platform::WiiU, &[(0x1111, 1), (0x2222, 2)])
+    );
+
+    let inspection = inspect_save(&output).unwrap();
+    assert_eq!(inspection.platform, Platform::WiiU);
+    assert_eq!(inspection.version_summary(), "v1.5 x1");
+    assert_eq!(inspection.option_label(), "v1.5");
+}
+
+#[test]
+fn downgrades_a_v1_6_save_to_v1_5() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("switch");
+    let output = temporary.path().join("wiiu");
+    fs::create_dir_all(input.join("0")).unwrap();
+
+    fs::write(
+        input.join("option.sav"),
+        record_table(V15, Platform::Switch, &[(0x1111, 1)]),
+    )
+    .unwrap();
+    fs::write(
+        input.join("0/game_data.sav"),
+        record_table(V16, Platform::Switch, &[(0xaaaa, 7), (V16_FIELD, 1)]),
+    )
+    .unwrap();
+
+    let report = convert(&input, Some(&output), &ConvertOptions::default());
+
+    assert_eq!(report.files_downgraded, 1);
+    assert_eq!(report.removed_fields, 1);
+
+    let converted = fs::read(output.join("0/game_data.sav")).unwrap();
+    assert_eq!(&converted[..4], &Platform::WiiU.magic());
+    assert!(
+        !converted
+            .windows(4)
+            .any(|window| window == V16_FIELD.to_be_bytes())
     );
 }
 
@@ -304,8 +399,8 @@ fn copies_slots_that_are_already_in_the_target_format() {
     // A slot merged from a Switch save: already little-endian, must not be
     // swapped a second time.
     fs::create_dir_all(input.join("1")).unwrap();
-    let already_switch = [0x1e, 0x47, 0x00, 0x00, 0x09, 0x08, 0x07, 0x06];
-    fs::write(input.join("1/game_data.sav"), already_switch).unwrap();
+    let already_switch = record_table(V16, Platform::Switch, &[(0xcccc, 4)]);
+    fs::write(input.join("1/game_data.sav"), &already_switch).unwrap();
 
     let info = inspect_save(&input).unwrap();
     assert_eq!(info.foreign_slots.len(), 1);
@@ -328,7 +423,7 @@ fn reports_per_slot_actions_for_a_mixed_save() {
     fs::create_dir_all(input.join("1")).unwrap();
     fs::write(
         input.join("1/game_data.sav"),
-        [0x1e, 0x47, 0x00, 0x00, 0x09, 0x08, 0x07, 0x06],
+        record_table(V16, Platform::Switch, &[(0xcccc, 4)]),
     )
     .unwrap();
 
@@ -348,89 +443,49 @@ fn reports_per_slot_actions_for_a_mixed_save() {
 
     assert_eq!(info.slot_action(slot0, &options), SlotAction::Convert);
     assert_eq!(info.slot_action(slot1, &options), SlotAction::Copy);
-    assert_eq!(info.version_summary(), "v1.6 x2");
+    assert_eq!(info.version_summary(), "v1.5 x1, v1.6 x1");
     assert!(info.file_breakdown().starts_with("2 slots"));
 }
 
 #[test]
-fn refuses_switch_2_edition_saves_for_wii_u() {
+fn keeps_a_supplied_wii_u_option_file() {
     let temporary = TestDirectory::new();
     let input = temporary.path().join("switch2");
     let output = temporary.path().join("wiiu");
-    make_switch_2_save(&input);
-
-    let info = inspect_save(&input).unwrap();
-    assert_eq!(info.platform, Platform::Switch);
-    assert_eq!(info.version_summary(), "v1.7 Switch 2 Edition x1");
-
-    let error = try_convert(&input, &output, &ConvertOptions::default()).unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("v1.7"), "{message}");
-    assert!(message.contains("option.sav"), "{message}");
-    assert!(message.contains("--option-sav"), "{message}");
-    assert!(message.contains("--drop-incompatible"), "{message}");
-    assert!(!output.exists());
-
-    // Known versions are not bypassed by --allow-unsupported.
-    let options = ConvertOptions {
-        allow_unsupported: true,
-        ..ConvertOptions::default()
-    };
-    assert!(try_convert(&input, &output, &options).is_err());
-    assert!(!output.exists());
-}
-
-#[test]
-fn drops_incompatible_slots_when_given_a_wii_u_option_file() {
-    let temporary = TestDirectory::new();
-    let input = temporary.path().join("switch-mixed");
-    let output = temporary.path().join("wiiu");
     let template = temporary.path().join("wiiu-template");
-    make_mixed_switch_save(&input);
+    make_newer_save(&input);
 
-    // A known-good Wii U option.sav supplies the file the v1.7 save cannot.
     fs::create_dir_all(&template).unwrap();
-    let wii_u_option = [0x00, 0x00, 0x47, 0x1b, 0x11, 0x22, 0x33, 0x44];
-    fs::write(template.join("option.sav"), wii_u_option).unwrap();
+    let wii_u_option = record_table(V15, Platform::WiiU, &[(0x1111, 42)]);
+    fs::write(template.join("option.sav"), &wii_u_option).unwrap();
 
     let options = ConvertOptions {
-        drop_incompatible: true,
         option_sav: Some(template.join("option.sav")),
         ..ConvertOptions::default()
     };
 
     let info = inspect_save(&input).unwrap();
-    assert_eq!(info.slots_to_drop(&options).len(), 1);
+    assert!(info.slots_to_drop(&options).is_empty());
 
     let report = convert_save(&info, &output, &options).unwrap();
 
     assert_eq!(report.target, Platform::WiiU);
     assert!(report.option_replaced);
-    assert_eq!(report.dropped, vec![PathBuf::from("7")]);
-    assert!(output.join("option.sav").is_file());
-    assert!(output.join("0/game_data.sav").is_file());
-    assert!(!output.join("7").exists());
-
     assert_eq!(fs::read(output.join("option.sav")).unwrap(), wii_u_option);
     assert_eq!(
-        fs::read(output.join("0/game_data.sav")).unwrap()[..4],
+        fs::read(output.join("7/game_data.sav")).unwrap()[..4],
         Platform::WiiU.magic()
     );
-
-    let converted = inspect_save(&output).unwrap();
-    assert_eq!(converted.platform, Platform::WiiU);
-    assert_eq!(converted.slots.len(), 1);
 }
 
 #[test]
 fn rejects_an_option_file_from_the_wrong_platform() {
     let temporary = TestDirectory::new();
-    let input = temporary.path().join("switch-mixed");
+    let input = temporary.path().join("switch2");
     let output = temporary.path().join("wiiu");
-    make_mixed_switch_save(&input);
+    make_newer_save(&input);
 
     let options = ConvertOptions {
-        drop_incompatible: true,
         option_sav: Some(input.join("option.sav")),
         ..ConvertOptions::default()
     };
@@ -481,7 +536,7 @@ fn cli_converts_and_dry_run_writes_nothing() {
         "unexpected summary: {stdout}"
     );
     assert!(stdout.contains("Target   : Switch (NS)"), "{stdout}");
-    assert!(stdout.contains("v1.6 x1"), "{stdout}");
+    assert!(stdout.contains("v1.5 x1"), "{stdout}");
     assert!(stdout.contains("Dry run"));
     assert!(!dry_output.exists());
 
@@ -499,21 +554,58 @@ fn cli_converts_and_dry_run_writes_nothing() {
 }
 
 #[test]
-fn cli_exits_with_three_for_switch_2_edition() {
+fn cli_dry_run_tolerates_an_existing_output_folder() {
     let temporary = TestDirectory::new();
-    let input = temporary.path().join("switch2");
-    make_switch_2_save(&input);
+    let input = temporary.path().join("save");
+    let output = temporary.path().join("converted");
+    make_save(&input, false);
+    fs::create_dir(&output).unwrap();
 
-    let blocked = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
         .arg("--dry-run")
         .arg(&input)
+        .arg(&output)
         .output()
         .unwrap();
 
-    assert_eq!(blocked.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&blocked.stderr);
-    assert!(stderr.contains("option.sav"), "{stderr}");
-    assert!(stderr.contains("--drop-incompatible"), "{stderr}");
+    assert!(
+        dry_run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&dry_run.stderr).contains("already exists"),
+        "{}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(String::from_utf8_lossy(&dry_run.stdout).contains("Dry run"));
+    assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+}
+
+#[test]
+fn cli_downgrades_a_switch_2_edition_save() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("switch2");
+    let output = temporary.path().join("wiiu");
+    make_newer_save(&input);
+
+    let conversion = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+        .arg(&input)
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        conversion.status.success(),
+        "{}",
+        String::from_utf8_lossy(&conversion.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&conversion.stdout);
+    assert!(stdout.contains("Downgraded"), "{stdout}");
+    assert!(stdout.contains("v1.5"), "{stdout}");
+
+    let converted = fs::read(output.join("7/game_data.sav")).unwrap();
+    assert_eq!(&converted[..4], &Platform::WiiU.magic());
 }
 
 #[test]
@@ -548,7 +640,7 @@ fn save_info_breakdown_counts_duplicate_copies() {
     make_save(&input, false);
     fs::write(
         input.join("0/game_data-NSConflict-5-mac15.6.sav"),
-        [0x00, 0x00, 0x47, 0x1e, 0x01, 0x02, 0x03, 0x04],
+        record_table(V16, Platform::WiiU, &[(0xdddd, 1)]),
     )
     .unwrap();
 

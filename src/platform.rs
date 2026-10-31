@@ -9,16 +9,9 @@ pub enum Platform {
 /// Last save header the Wii U release of the game ever wrote (v1.5, 0x471b).
 ///
 /// Version 1.6.0 (0x471e) shipped only on Switch (Nintendo Labo VR support) and
-/// 1.7 (0x4730) only on the Switch 2 Edition. Neither exists on Wii U.
-const WII_U_SAFE_VERSION: u16 = 0x471b;
-
-/// Highest header the converter still accepts for the Switch -> Wii U
-/// direction, matching what the original BotW Save Manager allowed.
-///
-/// v1.6 saves keep the v1.5 layout and only add VR settings, so they are
-/// accepted, but the Wii U release cannot be expected to open them. The tool
-/// warns instead of blocking, and `--drop-incompatible` removes them.
-const WII_U_ALLOWED_VERSION: u16 = 0x471e;
+/// 0x4730 only on later Switch releases / the Switch 2 Edition. Neither exists
+/// on Wii U.
+pub const WII_U_SAFE_VERSION: u16 = 0x471b;
 
 const VERSION_HEADERS: [(u16, &str); 9] = [
     (0x24e2, "v1.0"),
@@ -29,7 +22,7 @@ const VERSION_HEADERS: [(u16, &str); 9] = [
     (0x471a, "v1.4"),
     (0x471b, "v1.5"),
     (0x471e, "v1.6"),
-    (0x4730, "v1.7 Switch 2 Edition"),
+    (0x4730, "v1.9 Switch 2 Edition"),
 ];
 
 impl Platform {
@@ -121,9 +114,12 @@ impl Platform {
         raw <= WII_U_SAFE_VERSION
     }
 
-    /// True for versions the converter will still write for Wii U.
-    pub fn is_wii_u_allowed(raw: u16) -> bool {
-        raw <= WII_U_ALLOWED_VERSION
+    /// True for known newer layouts whose extra records can be identified and
+    /// removed, which turns the save back into a v1.5 record set.
+    ///
+    /// 0x471e adds one field, 0x4730 adds five; both keep the same container.
+    pub fn needs_downgrade(raw: u16) -> bool {
+        matches!(raw, 0x471e | 0x4730)
     }
 }
 
@@ -161,7 +157,7 @@ mod tests {
         );
         assert_eq!(
             Platform::Switch.version_from_header(&[0x30, 0x47, 0x00, 0x00]),
-            Some("v1.7 Switch 2 Edition")
+            Some("v1.9 Switch 2 Edition")
         );
     }
 
@@ -169,8 +165,10 @@ mod tests {
     fn classifies_versions_by_wii_u_support() {
         assert!(Platform::is_wii_u_safe(0x471b));
         assert!(!Platform::is_wii_u_safe(0x471e));
-        assert!(Platform::is_wii_u_allowed(0x471e));
-        assert!(!Platform::is_wii_u_allowed(0x4730));
+        assert!(Platform::needs_downgrade(0x471e));
+        assert!(Platform::needs_downgrade(0x4730));
+        assert!(!Platform::needs_downgrade(0x471b));
+        assert!(!Platform::needs_downgrade(0x471a));
     }
 
     #[test]
