@@ -9,5 +9,6 @@ pub mod save;
 pub use error::{Error, Result};
 pub use platform::Platform;
 pub use save::{
-    ConvertReport, SaveInfo, SaveSlot, convert_save, inspect_save, validate_output_path,
+    ConvertOptions, ConvertReport, SaveInfo, SaveSlot, SlotAction, convert_save, inspect_save,
+    validate_output_path,
 };

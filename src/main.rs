@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use botw_save_convert::cli::{Command, HELP, parse_args};
-use botw_save_convert::error::Result;
+use botw_save_convert::cli::{Args, Command, HELP, parse_args};
+use botw_save_convert::error::{Error, Result};
 use botw_save_convert::save::{
-    ConvertReport, SaveInfo, convert_save, default_output_path, inspect_save, validate_output_path,
+    ConvertOptions, ConvertReport, SaveInfo, SlotAction, convert_save, default_output_path,
+    file_decisions, inspect_save, validate_output_path,
 };
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process;
 
 fn main() {
@@ -32,85 +33,175 @@ fn run() -> i32 {
             println!("botw-convert {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Command::Run(args) if args.dry_run => run_dry(&args.input, args.output.as_deref()),
-        Command::Run(args) => {
-            run_conversion(&args.input, args.output.as_deref(), args.allow_unsupported)
-        }
+        Command::Run(args) => run_command(&args),
     };
 
     match result {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("error: {error}");
-            1
+            exit_code(&error)
         }
     }
 }
 
-fn resolve_output(info: &SaveInfo, requested: Option<&Path>) -> Result<PathBuf> {
-    match requested {
-        Some(path) => Ok(path.to_path_buf()),
-        None => default_output_path(&info.root, info.target()),
+fn exit_code(error: &Error) -> i32 {
+    match error {
+        Error::UnsupportedSave(_) => 3,
+        _ => 1,
     }
 }
 
-fn run_dry(input: &Path, output: Option<&Path>) -> Result<()> {
-    let info = inspect_save(input)?;
-    let requested = resolve_output(&info, output)?;
+fn run_command(args: &Args) -> Result<()> {
+    let options = ConvertOptions {
+        allow_unsupported: args.allow_unsupported,
+        drop_incompatible: args.drop_incompatible,
+        option_sav: args.option_sav.clone(),
+    };
+
+    let info = inspect_save(&args.input)?;
+    let requested = match &args.output {
+        Some(path) => path.to_path_buf(),
+        None => default_output_path(&info.root, info.target())?,
+    };
+
     print_summary(&info, &requested);
-    print_warnings(&info);
+    print_slots(&info, &options);
+    if args.verbose {
+        print_files(&info, &options)?;
+    }
+    print_warnings(&info, &options);
 
-    if let Some(reason) = info.wii_u_blocker() {
-        eprintln!("note: {reason}");
-    } else if info.has_unknown_versions() {
-        eprintln!(
-            "note: conversion requires --allow-unsupported because the game version is unknown"
-        );
+    let blockers = info.blockers(&options);
+    if !blockers.is_empty() {
+        return Err(Error::UnsupportedSave(blockers.join("\n  ")));
     }
 
-    validate_output_path(&info.root, &requested, false)?;
+    if args.dry_run {
+        validate_output_path(&info.root, &requested, false)?;
+        println!("\nDry run: nothing was written.");
+        return Ok(());
+    }
 
-    println!("\nDry run: nothing was written.");
-    Ok(())
-}
-
-fn run_conversion(input: &Path, output: Option<&Path>, allow_unsupported: bool) -> Result<()> {
-    let report = convert_save(input, output, allow_unsupported)?;
+    let report = convert_save(&info, &requested, &options)?;
     print_report(&report);
     Ok(())
 }
 
 fn print_summary(info: &SaveInfo, output: &Path) {
+    println!("Source   : {}", info.root.display());
+    println!("Save type: {} save", info.platform.display_label());
     println!(
-        "Detected : {} save ({})",
-        info.platform.display_label(),
-        info.version_summary()
+        "option   : {} ({} bytes)",
+        info.option_label(),
+        info.option_size
     );
+    println!("Versions : {}", info.version_summary());
     println!("Target   : {}", info.target().display_label());
-    println!("Files    : {} .sav", info.sav_files.len());
     println!("Output   : {}", output.display());
+    println!(
+        "Files    : {} .sav ({})",
+        info.sav_files.len(),
+        info.file_breakdown()
+    );
+}
+
+fn action_text(action: SlotAction, info: &SaveInfo) -> String {
+    match action {
+        SlotAction::Convert => format!("convert to {}", info.target().label()),
+        SlotAction::Copy => format!("keep, already {}", info.target().label()),
+        SlotAction::Drop => "drop, no Wii U version".to_owned(),
+        SlotAction::Blocked => "BLOCKED, no Wii U version".to_owned(),
+    }
+}
+
+fn print_slots(info: &SaveInfo, options: &ConvertOptions) {
+    if info.slots.is_empty() {
+        return;
+    }
+
+    let dir_width = info
+        .slots
+        .iter()
+        .map(|slot| slot.directory.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let version_width = info
+        .slots
+        .iter()
+        .map(|slot| slot.version_label().len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+
+    println!();
+    println!(
+        "{:<dir_width$}  {:<8}  {:<version_width$}  {:>9}  Action",
+        "Slot", "Stored", "Version", "Bytes"
+    );
+
+    for slot in &info.slots {
+        let action = info.slot_action(slot, options);
+        println!(
+            "{:<dir_width$}  {:<8}  {:<version_width$}  {:>9}  {}",
+            slot.directory,
+            slot.platform_label(),
+            slot.version_label(),
+            slot.size,
+            action_text(action, info)
+        );
+    }
+}
+
+fn print_files(info: &SaveInfo, options: &ConvertOptions) -> Result<()> {
+    println!("\nFiles:");
+    for (path, action) in file_decisions(info, options)? {
+        let label = match action {
+            SlotAction::Copy => "keep",
+            _ => "convert",
+        };
+        println!("  {:<52} {label}", path.display());
+    }
+    Ok(())
 }
 
 fn print_report(report: &ConvertReport) {
-    print_summary(&report.source, &report.output);
-    print_warnings(&report.source);
-    if report.sav_files_skipped > 0 {
+    println!();
+    println!(
+        "Done. Converted {} .sav to {} format.",
+        report.files_converted,
+        report.target.label()
+    );
+    if report.files_kept > 0 {
         println!(
-            "Skipped  : {} .sav already in {} format (copied unchanged)",
-            report.sav_files_skipped,
+            "      Kept {} .sav that were already {}.",
+            report.files_kept,
             report.target.label()
         );
     }
-    println!(
-        "\nDone. Converted {} .sav files ({} files copied total) to {} format.",
-        report.sav_files_converted,
-        report.files_copied,
-        report.target.label()
-    );
+    if !report.dropped.is_empty() {
+        println!(
+            "      Left out {} slot(s) with no {} equivalent: {}",
+            report.dropped.len(),
+            report.target.label(),
+            report
+                .dropped
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if report.option_replaced {
+        println!("      Replaced option.sav with the file given by --option-sav.");
+    }
+    println!("      {} files copied in total.", report.files_copied);
+    println!("      Output: {}", report.output.display());
 }
 
-fn print_warnings(info: &SaveInfo) {
-    for warning in info.warnings() {
+fn print_warnings(info: &SaveInfo, options: &ConvertOptions) {
+    for warning in info.warnings(options) {
         eprintln!("warning: {warning}");
     }
 }

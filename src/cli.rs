@@ -21,8 +21,18 @@ pub const HELP: &str = concat!(
     "Options:\n",
     "    -n, --dry-run               Inspect the save without writing anything\n",
     "        --allow-unsupported     Convert even if the game version is unknown\n",
+    "        --drop-incompatible     Switch -> Wii U only: leave out slots the Wii U\n",
+    "                                release cannot represent (v1.7 and newer)\n",
+    "        --option-sav <FILE>     Switch -> Wii U only: use this Wii U option.sav\n",
+    "                                in the output instead of converting the source one\n",
+    "    -v, --verbose               List every .sav file that is processed\n",
     "    -h, --help                  Print this help\n",
     "    -V, --version               Print the version\n",
+    "\n",
+    "Exit codes:\n",
+    "    0  success            1  failure            2  bad usage\n",
+    "    3  unsupported save (for example a Switch 2 Edition save without a\n",
+    "       Wii U equivalent)\n",
     "\n",
     "Safety:\n",
     "    The input folder is never modified. An existing OUTPUT_DIR is never\n",
@@ -30,9 +40,10 @@ pub const HELP: &str = concat!(
     "    Conversion runs in a temporary folder and is moved into place only\n",
     "    after validation. Keep a separate backup of any important save.\n",
     "\n",
-    "Limits:\n",
-    "    Switch 2 Edition saves (v1.7, 0x4730) have no Wii U equivalent and\n",
-    "    are rejected for the Switch -> Wii U direction.\n",
+    "Versions:\n",
+    "    Wii U stops at v1.5 (0x471b). v1.6 (0x471e) exists only on Switch and is\n",
+    "    converted with a warning. v1.7 / Switch 2 Edition (0x4730) has no Wii U\n",
+    "    equivalent at all.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +52,9 @@ pub struct Args {
     pub output: Option<PathBuf>,
     pub dry_run: bool,
     pub allow_unsupported: bool,
+    pub drop_incompatible: bool,
+    pub option_sav: Option<PathBuf>,
+    pub verbose: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,15 +71,29 @@ where
     let mut positional = Vec::new();
     let mut dry_run = false;
     let mut allow_unsupported = false;
+    let mut drop_incompatible = false;
+    let mut option_sav = None;
+    let mut verbose = false;
     let mut parse_options = true;
+    let mut arguments = arguments.into_iter();
 
-    for argument in arguments {
+    while let Some(argument) = arguments.next() {
         if parse_options && argument == "--" {
             parse_options = false;
             continue;
         }
 
         if parse_options {
+            if let Some(text) = argument.to_str() {
+                if let Some(value) = text.strip_prefix("--option-sav=") {
+                    if value.is_empty() {
+                        return Err("--option-sav needs a file path".to_owned());
+                    }
+                    option_sav = Some(PathBuf::from(value));
+                    continue;
+                }
+            }
+
             match argument.to_str() {
                 Some("-h" | "--help") => return Ok(Command::Help),
                 Some("-V" | "--version") => return Ok(Command::Version),
@@ -75,6 +103,21 @@ where
                 }
                 Some("--allow-unsupported") => {
                     allow_unsupported = true;
+                    continue;
+                }
+                Some("--drop-incompatible") => {
+                    drop_incompatible = true;
+                    continue;
+                }
+                Some("-v" | "--verbose") => {
+                    verbose = true;
+                    continue;
+                }
+                Some("--option-sav") => {
+                    let value = arguments
+                        .next()
+                        .ok_or_else(|| "--option-sav needs a file path".to_owned())?;
+                    option_sav = Some(PathBuf::from(value));
                     continue;
                 }
                 Some(value) if value.starts_with('-') => {
@@ -102,6 +145,9 @@ where
         output,
         dry_run,
         allow_unsupported,
+        drop_incompatible,
+        option_sav,
+        verbose,
     }))
 }
 
@@ -115,43 +161,44 @@ mod tests {
         values.iter().map(OsString::from).collect()
     }
 
+    fn run(values: &[&str]) -> Args {
+        match parse_args(args(values)).unwrap() {
+            Command::Run(args) => args,
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
     #[test]
     fn parses_paths_and_options() {
-        assert_eq!(
-            parse_args(args(&["--dry-run", "in", "out"])).unwrap(),
-            Command::Run(Args {
-                input: PathBuf::from("in"),
-                output: Some(PathBuf::from("out")),
-                dry_run: true,
-                allow_unsupported: false,
-            })
-        );
+        let parsed = run(&["--dry-run", "in", "out"]);
+        assert_eq!(parsed.input, PathBuf::from("in"));
+        assert_eq!(parsed.output, Some(PathBuf::from("out")));
+        assert!(parsed.dry_run);
+        assert!(!parsed.allow_unsupported);
     }
 
     #[test]
     fn output_is_optional() {
-        assert_eq!(
-            parse_args(args(&["in"])).unwrap(),
-            Command::Run(Args {
-                input: PathBuf::from("in"),
-                output: None,
-                dry_run: false,
-                allow_unsupported: false,
-            })
-        );
+        let parsed = run(&["in"]);
+        assert_eq!(parsed.input, PathBuf::from("in"));
+        assert_eq!(parsed.output, None);
+    }
+
+    #[test]
+    fn parses_wii_u_specific_flags() {
+        let parsed = run(&["--drop-incompatible", "--option-sav", "opt.sav", "in"]);
+        assert!(parsed.drop_incompatible);
+        assert_eq!(parsed.option_sav, Some(PathBuf::from("opt.sav")));
+
+        let parsed = run(&["--option-sav=opt.sav", "in", "out"]);
+        assert_eq!(parsed.option_sav, Some(PathBuf::from("opt.sav")));
     }
 
     #[test]
     fn supports_option_terminator() {
-        assert_eq!(
-            parse_args(args(&["--", "-input", "-output"])).unwrap(),
-            Command::Run(Args {
-                input: PathBuf::from("-input"),
-                output: Some(PathBuf::from("-output")),
-                dry_run: false,
-                allow_unsupported: false,
-            })
-        );
+        let parsed = run(&["--", "-input", "-output"]);
+        assert_eq!(parsed.input, PathBuf::from("-input"));
+        assert_eq!(parsed.output, Some(PathBuf::from("-output")));
     }
 
     #[test]
@@ -165,5 +212,6 @@ mod tests {
         assert!(parse_args(args(&["--wat", "in", "out"])).is_err());
         assert!(parse_args(args(&[])).is_err());
         assert!(parse_args(args(&["in", "out", "extra"])).is_err());
+        assert!(parse_args(args(&["in", "--option-sav"])).is_err());
     }
 }

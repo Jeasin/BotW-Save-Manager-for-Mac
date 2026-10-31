@@ -13,26 +13,71 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const OPTION_FILE: &str = "option.sav";
 const GAME_DATA_FILE: &str = "game_data.sav";
 
+/// What the converter will do with one save slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SlotAction {
+    /// Byte order is swapped into the target platform.
+    Convert,
+    /// Slot already uses the target platform's byte order; copied untouched.
+    Copy,
+    /// Slot cannot exist on the target platform and will be left out.
+    Drop,
+    /// Slot cannot exist on the target platform and no flag allows dropping it.
+    Blocked,
+}
+
 #[derive(Clone, Debug)]
 pub struct SaveSlot {
     pub relative_path: PathBuf,
-    pub version: Option<&'static str>,
-    pub raw_version: Option<u16>,
+    /// Slot folder name, e.g. `0` or `7`.
+    pub directory: String,
+    pub size: u64,
     /// Platform detected from this slot's own header, which can differ from the
     /// save as a whole when a folder was merged or partially converted.
     pub platform: Option<Platform>,
+    pub raw_version: Option<u16>,
+}
+
+impl SaveSlot {
+    pub fn version_label(&self) -> String {
+        match self.raw_version {
+            Some(raw) => Platform::version_label(raw),
+            None => "unknown".to_owned(),
+        }
+    }
+
+    pub fn platform_label(&self) -> &'static str {
+        match self.platform {
+            Some(Platform::WiiU) => "Wii U",
+            Some(Platform::Switch) => "Switch",
+            None => "-",
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct SaveInfo {
     pub root: PathBuf,
     pub platform: Platform,
+    pub option_size: u64,
     pub option_version: Option<u16>,
     pub slots: Vec<SaveSlot>,
     pub sav_files: Vec<PathBuf>,
     pub unknown_versions: Vec<PathBuf>,
+    /// Slots stored in the *other* platform's byte order than the save itself.
     pub foreign_slots: Vec<PathBuf>,
-    pub versions: Vec<&'static str>,
+    /// File-manager / cloud-sync duplicate copies such as `game_data-NSConflict-5.sav`.
+    pub duplicates: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConvertOptions {
+    pub allow_unsupported: bool,
+    /// Keep slots the target platform cannot represent, dropping them instead of
+    /// refusing the whole conversion.
+    pub drop_incompatible: bool,
+    /// Replace the output `option.sav` with this file (Wii U target only).
+    pub option_sav: Option<PathBuf>,
 }
 
 impl SaveInfo {
@@ -44,42 +89,224 @@ impl SaveInfo {
         !self.unknown_versions.is_empty()
     }
 
-    pub fn is_mixed_version(&self) -> bool {
-        self.versions.len() > 1
-    }
-
-    pub fn version_summary(&self) -> String {
-        if self.slots.is_empty() {
-            "no game_data.sav".to_owned()
-        } else if self.versions.is_empty() {
-            "unknown".to_owned()
-        } else {
-            self.versions.join(", ")
+    pub fn option_label(&self) -> String {
+        match self.option_version {
+            Some(raw) => Platform::version_label(raw),
+            None => "unknown".to_owned(),
         }
     }
 
-    pub fn warnings(&self) -> Vec<String> {
+    /// `v1.5 x4, v1.6 x2, v1.7 Switch 2 Edition x2`
+    pub fn version_summary(&self) -> String {
+        if self.slots.is_empty() {
+            return "no game_data.sav".to_owned();
+        }
+
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for slot in &self.slots {
+            let label = slot.version_label();
+            match counts.iter_mut().find(|(name, _)| *name == label) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((label, 1)),
+            }
+        }
+
+        counts
+            .into_iter()
+            .map(|(name, count)| format!("{name} x{count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// File categories, used for the `Files:` line so the totals are not opaque.
+    pub fn file_breakdown(&self) -> String {
+        let mut duplicates = 0;
+        let mut slots = 0;
+        let mut captions = 0;
+        let mut trackers = 0;
+        let mut option = 0;
+        let mut other = 0;
+
+        for path in &self.sav_files {
+            let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
+            if is_conflict_copy(name) {
+                duplicates += 1;
+            } else if name == OPTION_FILE {
+                option += 1;
+            } else if name == GAME_DATA_FILE {
+                slots += 1;
+            } else if name.starts_with("caption") {
+                captions += 1;
+            } else if name.starts_with("trackblock") {
+                trackers += 1;
+            } else {
+                other += 1;
+            }
+        }
+
+        let mut parts = vec![format!("{slots} slots"), format!("{trackers} trackers")];
+        if captions > 0 {
+            parts.push(format!("{captions} captions"));
+        }
+        if option > 0 {
+            parts.push(format!("{option} option"));
+        }
+        if other > 0 {
+            parts.push(format!("{other} other"));
+        }
+        if duplicates > 0 {
+            parts.push(format!("{duplicates} duplicate copies"));
+        }
+        parts.join(", ")
+    }
+
+    pub fn slot_action(&self, slot: &SaveSlot, options: &ConvertOptions) -> SlotAction {
+        let target = self.target();
+
+        if slot.platform == Some(target) {
+            return SlotAction::Copy;
+        }
+
+        if target == Platform::WiiU {
+            if let Some(raw) = slot.raw_version {
+                if !Platform::is_wii_u_allowed(raw) {
+                    return if options.drop_incompatible {
+                        SlotAction::Drop
+                    } else {
+                        SlotAction::Blocked
+                    };
+                }
+            }
+        }
+
+        SlotAction::Convert
+    }
+
+    /// Slots that will be left out of the output.
+    pub fn slots_to_drop(&self, options: &ConvertOptions) -> Vec<&SaveSlot> {
+        self.slots
+            .iter()
+            .filter(|slot| self.slot_action(slot, options) == SlotAction::Drop)
+            .collect()
+    }
+
+    /// Everything that prevents conversion, one line per offending file.
+    pub fn blockers(&self, options: &ConvertOptions) -> Vec<String> {
+        let mut blockers = Vec::new();
+
+        if self.has_unknown_versions() && !options.allow_unsupported {
+            for path in &self.unknown_versions {
+                blockers.push(format!(
+                    "'{}' has an unrecognised game version (use --allow-unsupported to convert anyway)",
+                    path.display()
+                ));
+            }
+        }
+
+        if self.target() != Platform::WiiU {
+            return blockers;
+        }
+
+        let option_allowed = match (self.option_version, &options.option_sav) {
+            // A replacement option.sav is supplied, so the source one is unused.
+            (_, Some(_)) => true,
+            (Some(raw), None) => Platform::is_wii_u_allowed(raw),
+            (None, None) => true,
+        };
+
+        if !option_allowed {
+            blockers.push(format!(
+                "'{OPTION_FILE}' is {} but a Wii U copy of the game cannot read it; \
+                 pass --option-sav <wiiu-option.sav> to supply a compatible one",
+                self.option_label()
+            ));
+        }
+
+        for slot in &self.slots {
+            if let Some(raw) = slot.raw_version {
+                if !Platform::is_wii_u_allowed(raw) && !options.drop_incompatible {
+                    blockers.push(format!(
+                        "'{}' is {} and has no Wii U equivalent; \
+                         add --drop-incompatible to leave this slot out",
+                        slot.relative_path.display(),
+                        Platform::version_label(raw)
+                    ));
+                }
+            }
+        }
+
+        blockers
+    }
+
+    pub fn warnings(&self, options: &ConvertOptions) -> Vec<String> {
         let mut warnings = Vec::new();
 
         for path in &self.unknown_versions {
+            if options.allow_unsupported {
+                warnings.push(format!(
+                    "'{}' has an unknown game version and will be byte-swapped anyway",
+                    path.display()
+                ));
+            }
+        }
+
+        if self.foreign_slots.len() < 4 && !self.foreign_slots.is_empty() {
+            for path in &self.foreign_slots {
+                warnings.push(format!(
+                    "'{}' already uses {} byte order inside a {} save, most likely left \
+                     over from an earlier partial conversion; it is copied unchanged so it \
+                     is not swapped twice",
+                    path.display(),
+                    self.target().label(),
+                    self.platform.label()
+                ));
+            }
+        } else if !self.foreign_slots.is_empty() {
             warnings.push(format!(
-                "could not identify the game version of '{}'",
-                path.display()
+                "{} slots already use {} byte order; they are copied unchanged",
+                self.foreign_slots.len(),
+                self.target().label()
             ));
         }
 
-        if self.is_mixed_version() {
-            warnings.push(format!(
-                "save slots use different game versions: {}",
-                self.versions.join(", ")
-            ));
+        if self.target() == Platform::WiiU {
+            for slot in &self.slots {
+                if let Some(raw) = slot.raw_version {
+                    if Platform::is_wii_u_allowed(raw) && !Platform::is_wii_u_safe(raw) {
+                        warnings.push(format!(
+                            "'{}' is {}; the Wii U release stopped at v1.5 and may \
+                             refuse this slot",
+                            slot.relative_path.display(),
+                            Platform::version_label(raw)
+                        ));
+                    }
+                }
+            }
+
+            let dropped = self.slots_to_drop(options);
+            if !dropped.is_empty() {
+                warnings.push(format!(
+                    "{} slot(s) will be left out of the Wii U output: {}",
+                    dropped.len(),
+                    dropped
+                        .iter()
+                        .map(|slot| format!("{} ({})", slot.directory, slot.version_label()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
         }
 
-        for path in &self.foreign_slots {
+        if !self.duplicates.is_empty() {
             warnings.push(format!(
-                "'{}' is already in {} format and will be copied without conversion",
-                path.display(),
-                self.platform.other().label()
+                "{} duplicate copy/copies found ({}); they are treated like normal .sav files",
+                self.duplicates.len(),
+                self.duplicates
+                    .iter()
+                    .take(3)
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
 
@@ -91,56 +318,16 @@ impl SaveInfo {
 
         warnings
     }
-
-    /// Returns an explanation when the Wii U release cannot represent this
-    /// save. The Wii U version of the game stopped at v1.6 (0x471e); Switch 2
-    /// Edition saves (v1.7, 0x4730) have no Wii U equivalent.
-    pub fn wii_u_blocker(&self) -> Option<String> {
-        if self.platform == Platform::WiiU {
-            return None;
-        }
-
-        let mut offenders: Vec<(String, u16)> = Vec::new();
-
-        if let Some(raw) = self.option_version {
-            if !Platform::is_wii_u_compatible(raw) {
-                offenders.push((OPTION_FILE.to_owned(), raw));
-            }
-        }
-
-        for slot in &self.slots {
-            if slot.platform != Some(self.platform) {
-                continue;
-            }
-            if let Some(raw) = slot.raw_version {
-                if !Platform::is_wii_u_compatible(raw) {
-                    offenders.push((slot.relative_path.display().to_string(), raw));
-                }
-            }
-        }
-
-        let (path, raw) = offenders.first()?;
-        let name = Platform::version_name(*raw)
-            .map(str::to_owned)
-            .unwrap_or_else(|| "an unknown version".to_owned());
-
-        Some(format!(
-            "cannot convert this save to Wii U: '{path}' uses {name} (0x{raw:04x}), \
-             but this converter only produces Wii U-compatible saves up to v1.6 (0x471e). \
-             v1.7 and newer exist only on Switch / Switch 2 Edition and have no Wii U \
-             equivalent, so a valid Wii U save cannot be produced. Use a v1.5/v1.6 \
-             Switch save for the Switch -> Wii U direction."
-        ))
-    }
 }
 
 #[derive(Debug)]
 pub struct ConvertReport {
-    pub source: SaveInfo,
     pub target: Platform,
     pub files_copied: usize,
-    pub sav_files_converted: usize,
-    pub sav_files_skipped: usize,
+    pub files_converted: usize,
+    pub files_kept: usize,
+    pub dropped: Vec<PathBuf>,
+    pub option_replaced: bool,
     pub output: PathBuf,
 }
 
@@ -178,6 +365,9 @@ pub fn inspect_save(input: &Path) -> Result<SaveInfo> {
         ))
     })?;
     let option_version = platform.version_code(&option_header);
+    let option_size = fs::metadata(&option_path)
+        .map_err(|error| Error::io("inspect option.sav", &option_path, error))?
+        .len();
 
     let all_files = collect_relative_files(&root)?;
     let sav_files: Vec<PathBuf> = all_files
@@ -185,13 +375,18 @@ pub fn inspect_save(input: &Path) -> Result<SaveInfo> {
         .filter(|path| is_sav_file(path))
         .cloned()
         .collect();
-
+    let mut duplicates = Vec::new();
     let mut slots = Vec::new();
     let mut unknown_versions = Vec::new();
     let mut foreign_slots = Vec::new();
-    let mut versions = Vec::new();
 
     for relative_path in &all_files {
+        if let Some(name) = relative_path.file_name().and_then(OsStr::to_str) {
+            if is_sav_file(relative_path) && is_conflict_copy(name) {
+                duplicates.push(relative_path.clone());
+            }
+        }
+
         if relative_path.file_name() != Some(OsStr::new(GAME_DATA_FILE)) {
             continue;
         }
@@ -205,39 +400,79 @@ pub fn inspect_save(input: &Path) -> Result<SaveInfo> {
             (Some(slot_platform), Some(header)) => slot_platform.version_code(&header),
             _ => None,
         };
-        let version = raw_version.and_then(Platform::version_name);
+        let size = fs::metadata(&path)
+            .map_err(|error| Error::io("inspect save slot", &path, error))?
+            .len();
 
         match slot_platform {
-            Some(detected) if detected == platform => match version {
-                Some(version) => {
-                    if !versions.contains(&version) {
-                        versions.push(version);
-                    }
-                }
-                None => unknown_versions.push(relative_path.clone()),
-            },
-            Some(_) => foreign_slots.push(relative_path.clone()),
+            Some(detected) if detected != platform => foreign_slots.push(relative_path.clone()),
             None => unknown_versions.push(relative_path.clone()),
+            Some(_) => {}
+        }
+
+        if slot_platform.is_some() && raw_version.is_none() {
+            unknown_versions.push(relative_path.clone());
         }
 
         slots.push(SaveSlot {
             relative_path: relative_path.clone(),
-            version,
-            raw_version,
+            directory: relative_path
+                .parent()
+                .and_then(Path::to_str)
+                .unwrap_or("?")
+                .to_owned(),
+            size,
             platform: slot_platform,
+            raw_version,
         });
     }
 
     Ok(SaveInfo {
         root,
         platform,
+        option_size,
         option_version,
         slots,
         sav_files,
         unknown_versions,
         foreign_slots,
-        versions,
+        duplicates,
     })
+}
+
+/// Per-file decision list used by `--verbose`. Reads the first four bytes of
+/// every `.sav` so files that already use the target byte order are reported
+/// instead of being silently swapped twice.
+pub fn file_decisions(
+    info: &SaveInfo,
+    options: &ConvertOptions,
+) -> Result<Vec<(PathBuf, SlotAction)>> {
+    let dropped = info.slots_to_drop(options);
+    let mut decisions = Vec::with_capacity(info.sav_files.len());
+
+    for relative in &info.sav_files {
+        if dropped
+            .iter()
+            .any(|slot| relative.starts_with(&slot.directory))
+        {
+            continue;
+        }
+
+        let path = info.root.join(relative);
+        let header = read_header(&path)?;
+        let detected = header
+            .as_ref()
+            .and_then(|header| Platform::from_magic(header));
+        let action = if detected == Some(info.target()) {
+            SlotAction::Copy
+        } else {
+            SlotAction::Convert
+        };
+
+        decisions.push((relative.clone(), action));
+    }
+
+    Ok(decisions)
 }
 
 /// Builds the implicit output folder used when the caller does not pass one:
@@ -372,6 +607,42 @@ pub fn validate_output_path(input: &Path, output: &Path, create_parents: bool) -
     }
 }
 
+/// Checks a `--option-sav` replacement before anything is written.
+pub fn validate_option_override(path: &Path, target: Platform) -> Result<Vec<u8>> {
+    let header = read_header(path)?.ok_or_else(|| {
+        Error::InvalidInput(format!("'{}' is shorter than 4 bytes", path.display()))
+    })?;
+    let detected = Platform::from_magic(&header).ok_or_else(|| {
+        Error::InvalidInput(format!(
+            "'{}' is not a Breath of the Wild option.sav",
+            path.display()
+        ))
+    })?;
+
+    if detected != target {
+        return Err(Error::InvalidInput(format!(
+            "'{}' is a {} option.sav, but the output is {}",
+            path.display(),
+            detected.label(),
+            target.label()
+        )));
+    }
+
+    if target == Platform::WiiU {
+        if let Some(raw) = detected.version_code(&header) {
+            if !Platform::is_wii_u_allowed(raw) {
+                return Err(Error::InvalidInput(format!(
+                    "'{}' is {}, which a Wii U copy of the game cannot read",
+                    path.display(),
+                    Platform::version_label(raw)
+                )));
+            }
+        }
+    }
+
+    fs::read(path).map_err(|error| Error::io("read option.sav replacement", path, error))
+}
+
 fn absolute_path(path: &Path) -> Result<PathBuf> {
     let joined = if path.is_absolute() {
         path.to_path_buf()
@@ -402,35 +673,48 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 }
 
 pub fn convert_save(
-    input: &Path,
-    output: Option<&Path>,
-    allow_unsupported: bool,
+    source: &SaveInfo,
+    requested_output: &Path,
+    options: &ConvertOptions,
 ) -> Result<ConvertReport> {
-    let source = inspect_save(input)?;
-
-    if source.has_unknown_versions() && !allow_unsupported {
-        return Err(Error::UnsupportedSave(format!(
-            "one or more game versions are unknown ({}); use --allow-unsupported to convert anyway",
-            source.version_summary()
-        )));
+    let blockers = source.blockers(options);
+    if !blockers.is_empty() {
+        return Err(Error::UnsupportedSave(blockers.join("\n  ")));
     }
 
-    if source.target() == Platform::WiiU {
-        if let Some(reason) = source.wii_u_blocker() {
-            return Err(Error::UnsupportedSave(reason));
-        }
-    }
+    let output = validate_output_path(&source.root, requested_output, true)?;
 
-    let requested = match output {
-        Some(path) => path.to_path_buf(),
-        None => default_output_path(&source.root, source.target())?,
+    let replacement = match &options.option_sav {
+        Some(path) => Some(validate_option_override(path, source.target())?),
+        None => None,
     };
-    let output = validate_output_path(&source.root, &requested, true)?;
+
+    let dropped_dirs: Vec<PathBuf> = source
+        .slots_to_drop(options)
+        .iter()
+        .map(|slot| PathBuf::from(&slot.directory))
+        .collect();
+
     let temporary = TemporaryDirectory::create(&output)?;
-    let files_copied = copy_directory(&source.root, temporary.path())?;
-    let mut sav_files_skipped = 0usize;
+    let files_copied = copy_directory(&source.root, temporary.path(), &dropped_dirs)?;
+
+    if let Some(data) = &replacement {
+        let path = temporary.path().join(OPTION_FILE);
+        fs::write(&path, data)
+            .map_err(|error| Error::io("write replacement option.sav", &path, error))?;
+    }
+
+    let mut files_converted = 0usize;
+    let mut files_kept = 0usize;
 
     for relative_path in &source.sav_files {
+        if dropped_dirs
+            .iter()
+            .any(|dir| relative_path.starts_with(dir))
+        {
+            continue;
+        }
+
         let path = temporary.path().join(relative_path);
         let mut data =
             fs::read(&path).map_err(|error| Error::io("read save file", &path, error))?;
@@ -440,7 +724,7 @@ pub fn convert_save(
         // converted earlier (or imported from the other platform). Swapping it
         // again would corrupt it, so copy it through untouched.
         if data.len() >= 4 && Platform::from_magic(&data[..4]) == Some(source.target()) {
-            sav_files_skipped += 1;
+            files_kept += 1;
             continue;
         }
 
@@ -456,25 +740,31 @@ pub fn convert_save(
         }
 
         fs::write(&path, &data).map_err(|error| Error::io("write converted save", &path, error))?;
+        files_converted += 1;
     }
 
-    verify_converted_save(temporary.path(), &source, source.target())?;
+    verify_converted_save(temporary.path(), source, source.target(), &dropped_dirs)?;
 
-    let sav_files_converted = source.sav_files.len() - sav_files_skipped;
     let target = source.target();
     temporary.persist(&output)?;
 
     Ok(ConvertReport {
-        source,
         target,
         files_copied,
-        sav_files_converted,
-        sav_files_skipped,
+        files_converted,
+        files_kept,
+        dropped: dropped_dirs,
+        option_replaced: replacement.is_some(),
         output,
     })
 }
 
-fn verify_converted_save(output: &Path, source: &SaveInfo, target: Platform) -> Result<()> {
+fn verify_converted_save(
+    output: &Path,
+    source: &SaveInfo,
+    target: Platform,
+    dropped: &[PathBuf],
+) -> Result<()> {
     let converted = inspect_save(output).map_err(|error| {
         Error::Verification(format!("could not read the converted output: {error}"))
     })?;
@@ -487,14 +777,32 @@ fn verify_converted_save(output: &Path, source: &SaveInfo, target: Platform) -> 
         )));
     }
 
-    if converted.sav_files.len() != source.sav_files.len() {
-        return Err(Error::Verification(
-            "the number of .sav files changed during conversion".to_owned(),
-        ));
+    let expected_slots = source
+        .slots
+        .iter()
+        .filter(|slot| {
+            !dropped
+                .iter()
+                .any(|dir| slot.relative_path.starts_with(dir))
+        })
+        .count();
+
+    if converted.slots.len() != expected_slots {
+        return Err(Error::Verification(format!(
+            "expected {expected_slots} slots in the output, found {}",
+            converted.slots.len()
+        )));
     }
 
     for source_slot in &source.slots {
-        let Some(expected_version) = source_slot.version else {
+        if dropped
+            .iter()
+            .any(|dir| source_slot.relative_path.starts_with(dir))
+        {
+            continue;
+        }
+
+        let Some(expected) = source_slot.raw_version else {
             continue;
         };
 
@@ -509,11 +817,22 @@ fn verify_converted_save(output: &Path, source: &SaveInfo, target: Platform) -> 
                 ))
             })?;
 
-        if converted_slot.version != Some(expected_version) {
+        if converted_slot.raw_version != Some(expected) {
             return Err(Error::Verification(format!(
-                "game version changed in '{}' (was {expected_version}, now {})",
+                "game version changed in '{}' (was 0x{expected:04x}, now {})",
                 source_slot.relative_path.display(),
-                converted_slot.version.unwrap_or("unknown")
+                converted_slot
+                    .raw_version
+                    .map(|raw| format!("0x{raw:04x}"))
+                    .unwrap_or_else(|| "unknown".to_owned())
+            )));
+        }
+
+        if converted_slot.platform != Some(target) {
+            return Err(Error::Verification(format!(
+                "'{}' still uses {} byte order after conversion",
+                source_slot.relative_path.display(),
+                converted_slot.platform_label()
             )));
         }
     }
@@ -525,6 +844,17 @@ fn is_sav_file(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
         .is_some_and(|extension| extension.eq_ignore_ascii_case("sav"))
+}
+
+/// Recognises duplicates created by cloud sync or file managers, e.g.
+/// `game_data-NSConflict-5-mac15.6.sav` or `caption-冲突-Jeasin_Win11.sav`.
+fn is_conflict_copy(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    name.contains("NSConflict")
+        || name.contains("冲突")
+        || lower.contains("-copy")
+        || lower.contains(" copy")
+        || lower.ends_with(".bak")
 }
 
 fn read_header(path: &Path) -> Result<Option<[u8; 4]>> {
@@ -587,8 +917,14 @@ fn collect_relative_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn copy_directory(source: &Path, destination: &Path) -> Result<usize> {
-    fn visit(source: &Path, destination: &Path, copied: &mut usize) -> Result<()> {
+fn copy_directory(source: &Path, destination: &Path, skip: &[PathBuf]) -> Result<usize> {
+    fn visit(
+        source: &Path,
+        destination: &Path,
+        skip: &[PathBuf],
+        prefix: &Path,
+        copied: &mut usize,
+    ) -> Result<()> {
         let mut entries = fs::read_dir(source)
             .map_err(|error| Error::io("read source directory", source, error))?
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -598,9 +934,14 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<usize> {
         for entry in entries {
             let source_path = entry.path();
             let destination_path = destination.join(entry.file_name());
+            let relative = prefix.join(entry.file_name());
             let file_type = entry.file_type().map_err(|error| {
                 Error::io("inspect source directory entry", &source_path, error)
             })?;
+
+            if skip.iter().any(|dir| relative.starts_with(dir)) {
+                continue;
+            }
 
             if file_type.is_symlink() {
                 return Err(Error::InvalidInput(format!(
@@ -613,7 +954,7 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<usize> {
                 fs::create_dir(&destination_path).map_err(|error| {
                     Error::io("create output directory", &destination_path, error)
                 })?;
-                visit(&source_path, &destination_path, copied)?;
+                visit(&source_path, &destination_path, skip, &relative, copied)?;
             } else if file_type.is_file() {
                 fs::copy(&source_path, &destination_path)
                     .map_err(|error| Error::io("copy save file", &source_path, error))?;
@@ -630,7 +971,7 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<usize> {
     }
 
     let mut copied = 0;
-    visit(source, destination, &mut copied)?;
+    visit(source, destination, skip, Path::new(""), &mut copied)?;
     Ok(copied)
 }
 

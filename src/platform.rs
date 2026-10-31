@@ -6,12 +6,19 @@ pub enum Platform {
     Switch,
 }
 
-/// Highest save header this tool will write for Wii U (v1.6).
+/// Last save header the Wii U release of the game ever wrote (v1.5, 0x471b).
 ///
-/// The Wii U release stopped at 1.5.0; v1.6 only shipped on Switch, and v1.7
-/// and later (Switch 2 Edition) have no Wii U equivalent at all. Allowing 1.6
-/// keeps the Switch -> Wii U path that the original tool supports working.
-const WII_U_MAX_VERSION: u16 = 0x471e;
+/// Version 1.6.0 (0x471e) shipped only on Switch (Nintendo Labo VR support) and
+/// 1.7 (0x4730) only on the Switch 2 Edition. Neither exists on Wii U.
+const WII_U_SAFE_VERSION: u16 = 0x471b;
+
+/// Highest header the converter still accepts for the Switch -> Wii U
+/// direction, matching what the original BotW Save Manager allowed.
+///
+/// v1.6 saves keep the v1.5 layout and only add VR settings, so they are
+/// accepted, but the Wii U release cannot be expected to open them. The tool
+/// warns instead of blocking, and `--drop-incompatible` removes them.
+const WII_U_ALLOWED_VERSION: u16 = 0x471e;
 
 const VERSION_HEADERS: [(u16, &str); 9] = [
     (0x24e2, "v1.0"),
@@ -55,7 +62,7 @@ impl Platform {
         }
     }
 
-    /// Identifies the platform from an `option.sav` header.
+    /// Identifies the platform from an `option.sav` / `game_data.sav` header.
     ///
     /// Both platforms store the same 16-bit version code, only the byte order
     /// differs: Wii U writes `00 00 47 xx`, Switch writes `xx 47 00 00`.
@@ -92,9 +99,7 @@ impl Platform {
     pub fn version_from_header(self, header: &[u8]) -> Option<&'static str> {
         let raw = self.version_code(header)?;
 
-        VERSION_HEADERS
-            .iter()
-            .find_map(|(value, name)| (*value == raw).then_some(*name))
+        Self::version_name(raw)
     }
 
     pub fn version_name(raw: u16) -> Option<&'static str> {
@@ -103,8 +108,22 @@ impl Platform {
             .find_map(|(value, name)| (*value == raw).then_some(*name))
     }
 
-    pub fn is_wii_u_compatible(raw: u16) -> bool {
-        raw <= WII_U_MAX_VERSION
+    /// Short label for reports, e.g. `v1.5` or `unknown 0x4731`.
+    pub fn version_label(raw: u16) -> String {
+        match Self::version_name(raw) {
+            Some(name) => name.to_owned(),
+            None => format!("unknown 0x{raw:04x}"),
+        }
+    }
+
+    /// True for versions that a Wii U copy of the game can be expected to read.
+    pub fn is_wii_u_safe(raw: u16) -> bool {
+        raw <= WII_U_SAFE_VERSION
+    }
+
+    /// True for versions the converter will still write for Wii U.
+    pub fn is_wii_u_allowed(raw: u16) -> bool {
+        raw <= WII_U_ALLOWED_VERSION
     }
 }
 
@@ -147,9 +166,17 @@ mod tests {
     }
 
     #[test]
-    fn marks_switch_2_edition_as_beyond_wii_u() {
-        assert!(Platform::is_wii_u_compatible(0x471e));
-        assert!(!Platform::is_wii_u_compatible(0x4730));
+    fn classifies_versions_by_wii_u_support() {
+        assert!(Platform::is_wii_u_safe(0x471b));
+        assert!(!Platform::is_wii_u_safe(0x471e));
+        assert!(Platform::is_wii_u_allowed(0x471e));
+        assert!(!Platform::is_wii_u_allowed(0x4730));
+    }
+
+    #[test]
+    fn labels_unknown_versions_with_the_raw_code() {
+        assert_eq!(Platform::version_label(0x471b), "v1.5");
+        assert_eq!(Platform::version_label(0x9999), "unknown 0x9999");
     }
 
     #[test]

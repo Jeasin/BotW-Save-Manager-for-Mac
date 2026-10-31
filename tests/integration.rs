@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use botw_save_convert::Platform;
-use botw_save_convert::save::{convert_save, inspect_save};
+use botw_save_convert::save::{
+    ConvertOptions, ConvertReport, SaveInfo, SlotAction, convert_save, default_output_path,
+    inspect_save,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -37,6 +40,25 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+fn convert(input: &Path, output: Option<&Path>, options: &ConvertOptions) -> ConvertReport {
+    let info = inspect_save(input).unwrap();
+    let output = match output {
+        Some(path) => path.to_path_buf(),
+        None => default_output_path(&info.root, info.target()).unwrap(),
+    };
+
+    convert_save(&info, &output, options).expect("conversion failed")
+}
+
+fn try_convert(
+    input: &Path,
+    output: &Path,
+    options: &ConvertOptions,
+) -> botw_save_convert::Result<ConvertReport> {
+    let info = inspect_save(input)?;
+    convert_save(&info, output, options)
 }
 
 fn make_save(root: &Path, unknown_version: bool) -> Vec<u8> {
@@ -91,6 +113,34 @@ fn make_switch_2_save(root: &Path) {
     .unwrap();
 }
 
+/// A Switch save that mixes a v1.5 slot with a v1.7 (Switch 2 Edition) one.
+fn make_mixed_switch_save(root: &Path) {
+    fs::create_dir_all(root.join("0")).unwrap();
+    fs::create_dir_all(root.join("7")).unwrap();
+
+    fs::write(
+        root.join("option.sav"),
+        [
+            0x30, 0x47, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
+        ],
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("0/game_data.sav"),
+        [0x1b, 0x47, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04],
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("7/game_data.sav"),
+        [
+            0x30, 0x47, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00,
+        ],
+    )
+    .unwrap();
+}
+
 #[test]
 fn converts_a_wii_u_save_and_leaves_the_source_untouched() {
     let temporary = TestDirectory::new();
@@ -99,12 +149,12 @@ fn converts_a_wii_u_save_and_leaves_the_source_untouched() {
     let original_game_data = make_save(&input, false);
     let original_option = fs::read(input.join("option.sav")).unwrap();
 
-    let report = convert_save(&input, Some(&output), false).unwrap();
+    let report = convert(&input, Some(&output), &ConvertOptions::default());
 
-    assert_eq!(report.source.platform, Platform::WiiU);
     assert_eq!(report.target, Platform::Switch);
-    assert_eq!(report.sav_files_converted, 3);
+    assert_eq!(report.files_converted, 3);
     assert_eq!(report.files_copied, 3);
+    assert_eq!(report.files_kept, 0);
 
     assert_eq!(fs::read(input.join("option.sav")).unwrap(), original_option);
     assert_eq!(
@@ -122,7 +172,7 @@ fn converts_a_wii_u_save_and_leaves_the_source_untouched() {
 
     let inspection = inspect_save(&output).unwrap();
     assert_eq!(inspection.platform, Platform::Switch);
-    assert_eq!(inspection.version_summary(), "v1.6");
+    assert_eq!(inspection.version_summary(), "v1.6 x1");
 }
 
 #[test]
@@ -136,10 +186,9 @@ fn converts_back_to_wii_u_byte_for_byte() {
     let original_game_data = fs::read(wii_u.join("0/game_data.sav")).unwrap();
     let original_trackblock = fs::read(wii_u.join("0/trackblock_0.sav")).unwrap();
 
-    convert_save(&wii_u, Some(&switch), false).unwrap();
-    let report = convert_save(&switch, Some(&round_trip), false).unwrap();
+    convert(&wii_u, Some(&switch), &ConvertOptions::default());
+    let report = convert(&switch, Some(&round_trip), &ConvertOptions::default());
 
-    assert_eq!(report.source.platform, Platform::Switch);
     assert_eq!(report.target, Platform::WiiU);
     assert_eq!(
         fs::read(round_trip.join("option.sav")).unwrap(),
@@ -162,12 +211,16 @@ fn refuses_unknown_versions_without_the_explicit_flag() {
     let output = temporary.path().join("converted");
     make_save(&input, true);
 
-    let error = convert_save(&input, Some(&output), false).unwrap_err();
+    let error = try_convert(&input, &output, &ConvertOptions::default()).unwrap_err();
     assert!(error.to_string().contains("--allow-unsupported"));
     assert!(!output.exists());
 
-    let report = convert_save(&input, Some(&output), true).unwrap();
-    assert_eq!(report.sav_files_converted, 3);
+    let options = ConvertOptions {
+        allow_unsupported: true,
+        ..ConvertOptions::default()
+    };
+    let report = convert(&input, Some(&output), &options);
+    assert_eq!(report.files_converted, 3);
     assert!(output.exists());
 }
 
@@ -180,7 +233,7 @@ fn refuses_to_overwrite_an_existing_output_directory() {
     fs::create_dir(&output).unwrap();
     fs::write(output.join("keep-me"), b"do not overwrite").unwrap();
 
-    let error = convert_save(&input, Some(&output), false).unwrap_err();
+    let error = try_convert(&input, &output, &ConvertOptions::default()).unwrap_err();
     assert!(error.to_string().contains("already exists"));
     assert_eq!(
         fs::read(output.join("keep-me")).unwrap(),
@@ -195,7 +248,7 @@ fn refuses_an_output_directory_inside_the_input() {
     let output = input.join("converted");
     make_save(&input, false);
 
-    let error = convert_save(&input, Some(&output), false).unwrap_err();
+    let error = try_convert(&input, &output, &ConvertOptions::default()).unwrap_err();
     assert!(error.to_string().contains("cannot be inside the input"));
     assert!(!output.exists());
 }
@@ -206,7 +259,7 @@ fn default_output_is_a_sibling_named_after_the_target_platform() {
     let input = temporary.path().join("save");
     make_save(&input, false);
 
-    let report = convert_save(&input, None, false).unwrap();
+    let report = convert(&input, None, &ConvertOptions::default());
 
     assert_eq!(
         report.output,
@@ -223,7 +276,7 @@ fn default_output_replaces_an_existing_platform_suffix() {
     let input = temporary.path().join("save-wiiu");
     make_save(&input, false);
 
-    let report = convert_save(&input, None, false).unwrap();
+    let report = convert(&input, None, &ConvertOptions::default());
 
     assert_eq!(report.output, temporary.canonical().join("save-switch"));
 }
@@ -235,7 +288,7 @@ fn creates_missing_parent_directories() {
     let output = temporary.path().join("a/b/c/converted");
     make_save(&input, false);
 
-    let report = convert_save(&input, Some(&output), false).unwrap();
+    let report = convert(&input, Some(&output), &ConvertOptions::default());
 
     assert_eq!(report.output, temporary.canonical().join("a/b/c/converted"));
     assert!(report.output.join("option.sav").is_file());
@@ -258,13 +311,45 @@ fn copies_slots_that_are_already_in_the_target_format() {
     assert_eq!(info.foreign_slots.len(), 1);
     assert!(info.unknown_versions.is_empty());
 
-    let report = convert_save(&input, Some(&output), false).unwrap();
-    assert_eq!(report.sav_files_skipped, 1);
-    assert_eq!(report.sav_files_converted, 3);
+    let report = convert(&input, Some(&output), &ConvertOptions::default());
+    assert_eq!(report.files_kept, 1);
+    assert_eq!(report.files_converted, 3);
     assert_eq!(
         fs::read(output.join("1/game_data.sav")).unwrap(),
         already_switch
     );
+}
+
+#[test]
+fn reports_per_slot_actions_for_a_mixed_save() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("save");
+    make_save(&input, false);
+    fs::create_dir_all(input.join("1")).unwrap();
+    fs::write(
+        input.join("1/game_data.sav"),
+        [0x1e, 0x47, 0x00, 0x00, 0x09, 0x08, 0x07, 0x06],
+    )
+    .unwrap();
+
+    let info = inspect_save(&input).unwrap();
+    let options = ConvertOptions::default();
+
+    let slot0 = info
+        .slots
+        .iter()
+        .find(|slot| slot.directory == "0")
+        .unwrap();
+    let slot1 = info
+        .slots
+        .iter()
+        .find(|slot| slot.directory == "1")
+        .unwrap();
+
+    assert_eq!(info.slot_action(slot0, &options), SlotAction::Convert);
+    assert_eq!(info.slot_action(slot1, &options), SlotAction::Copy);
+    assert_eq!(info.version_summary(), "v1.6 x2");
+    assert!(info.file_breakdown().starts_with("2 slots"));
 }
 
 #[test]
@@ -276,16 +361,86 @@ fn refuses_switch_2_edition_saves_for_wii_u() {
 
     let info = inspect_save(&input).unwrap();
     assert_eq!(info.platform, Platform::Switch);
-    assert_eq!(info.version_summary(), "v1.7 Switch 2 Edition");
+    assert_eq!(info.version_summary(), "v1.7 Switch 2 Edition x1");
 
-    let error = convert_save(&input, Some(&output), false).unwrap_err();
+    let error = try_convert(&input, &output, &ConvertOptions::default()).unwrap_err();
     let message = error.to_string();
     assert!(message.contains("v1.7"), "{message}");
-    assert!(message.contains("Wii U"), "{message}");
+    assert!(message.contains("option.sav"), "{message}");
+    assert!(message.contains("--option-sav"), "{message}");
+    assert!(message.contains("--drop-incompatible"), "{message}");
     assert!(!output.exists());
 
     // Known versions are not bypassed by --allow-unsupported.
-    assert!(convert_save(&input, Some(&output), true).is_err());
+    let options = ConvertOptions {
+        allow_unsupported: true,
+        ..ConvertOptions::default()
+    };
+    assert!(try_convert(&input, &output, &options).is_err());
+    assert!(!output.exists());
+}
+
+#[test]
+fn drops_incompatible_slots_when_given_a_wii_u_option_file() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("switch-mixed");
+    let output = temporary.path().join("wiiu");
+    let template = temporary.path().join("wiiu-template");
+    make_mixed_switch_save(&input);
+
+    // A known-good Wii U option.sav supplies the file the v1.7 save cannot.
+    fs::create_dir_all(&template).unwrap();
+    let wii_u_option = [0x00, 0x00, 0x47, 0x1b, 0x11, 0x22, 0x33, 0x44];
+    fs::write(template.join("option.sav"), wii_u_option).unwrap();
+
+    let options = ConvertOptions {
+        drop_incompatible: true,
+        option_sav: Some(template.join("option.sav")),
+        ..ConvertOptions::default()
+    };
+
+    let info = inspect_save(&input).unwrap();
+    assert_eq!(info.slots_to_drop(&options).len(), 1);
+
+    let report = convert_save(&info, &output, &options).unwrap();
+
+    assert_eq!(report.target, Platform::WiiU);
+    assert!(report.option_replaced);
+    assert_eq!(report.dropped, vec![PathBuf::from("7")]);
+    assert!(output.join("option.sav").is_file());
+    assert!(output.join("0/game_data.sav").is_file());
+    assert!(!output.join("7").exists());
+
+    assert_eq!(fs::read(output.join("option.sav")).unwrap(), wii_u_option);
+    assert_eq!(
+        fs::read(output.join("0/game_data.sav")).unwrap()[..4],
+        Platform::WiiU.magic()
+    );
+
+    let converted = inspect_save(&output).unwrap();
+    assert_eq!(converted.platform, Platform::WiiU);
+    assert_eq!(converted.slots.len(), 1);
+}
+
+#[test]
+fn rejects_an_option_file_from_the_wrong_platform() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("switch-mixed");
+    let output = temporary.path().join("wiiu");
+    make_mixed_switch_save(&input);
+
+    let options = ConvertOptions {
+        drop_incompatible: true,
+        option_sav: Some(input.join("option.sav")),
+        ..ConvertOptions::default()
+    };
+
+    let info = inspect_save(&input).unwrap();
+    let error = convert_save(&info, &output, &options).unwrap_err();
+    assert!(
+        error.to_string().contains("is a Switch option.sav"),
+        "{error}"
+    );
     assert!(!output.exists());
 }
 
@@ -321,8 +476,12 @@ fn cli_converts_and_dry_run_writes_nothing() {
         .unwrap();
     assert!(dry_run.status.success());
     let stdout = String::from_utf8_lossy(&dry_run.stdout);
-    assert!(stdout.contains("Detected : Wii U save (v1.6)"), "{stdout}");
+    assert!(
+        stdout.contains("Save type: Wii U save"),
+        "unexpected summary: {stdout}"
+    );
     assert!(stdout.contains("Target   : Switch (NS)"), "{stdout}");
+    assert!(stdout.contains("v1.6 x1"), "{stdout}");
     assert!(stdout.contains("Dry run"));
     assert!(!dry_output.exists());
 
@@ -337,6 +496,24 @@ fn cli_converts_and_dry_run_writes_nothing() {
         String::from_utf8_lossy(&conversion.stderr)
     );
     assert!(output.join("option.sav").is_file());
+}
+
+#[test]
+fn cli_exits_with_three_for_switch_2_edition() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("switch2");
+    make_switch_2_save(&input);
+
+    let blocked = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+        .arg("--dry-run")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(blocked.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&blocked.stderr);
+    assert!(stderr.contains("option.sav"), "{stderr}");
+    assert!(stderr.contains("--drop-incompatible"), "{stderr}");
 }
 
 #[test]
@@ -362,4 +539,27 @@ fn cli_uses_the_default_output_when_only_the_input_is_given() {
         "{}",
         String::from_utf8_lossy(&conversion.stdout)
     );
+}
+
+#[test]
+fn save_info_breakdown_counts_duplicate_copies() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("save");
+    make_save(&input, false);
+    fs::write(
+        input.join("0/game_data-NSConflict-5-mac15.6.sav"),
+        [0x00, 0x00, 0x47, 0x1e, 0x01, 0x02, 0x03, 0x04],
+    )
+    .unwrap();
+
+    let info: SaveInfo = inspect_save(&input).unwrap();
+    assert_eq!(info.duplicates.len(), 1);
+    assert_eq!(info.sav_files.len(), 4);
+    assert!(info.file_breakdown().contains("1 duplicate copies"));
+    assert!(info.sav_files.iter().any(|path| {
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("NSConflict")
+    }));
 }
