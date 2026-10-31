@@ -85,23 +85,23 @@ Ryujinx ~/Library/Application Support/Ryujinx/bis/user/save/0000000000000002/0/
 
 分不清就跑 `uname -m`：输出 `arm64` 是 Apple Silicon，`x86_64` 是 Intel。三个包里的程序功能完全一样，只是编译目标不同；单架构包只有通用包的一半大，所以按机器挑更省事。
 
-每个包都有同名 `.sha256`。校验并安装（把 `A` 换成你下的那个标签）：
+下面这段会自己下载、校验、解压、安装，改开头两行就能整段贴进终端（在哪个目录跑都行，文件会落在那儿）：
 
 ```bash
 V=1.0.0
 A=arm64    # arm64 / x86_64 / universal
-shasum -a 256 -c bsmm-$V-macos-$A.tar.gz.sha256    # 输出 OK 才继续
+B="https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/download/v$V"
+curl -fLO "$B/bsmm-$V-macos-$A.tar.gz"
+curl -fLO "$B/bsmm-$V-macos-$A.tar.gz.sha256"
+shasum -a 256 -c bsmm-$V-macos-$A.tar.gz.sha256    # 必须输出 OK
 tar -xzf bsmm-$V-macos-$A.tar.gz
 install -m 755 bsmm ~/.local/bin/bsmm
+xattr -d com.apple.quarantine ~/.local/bin/bsmm 2>/dev/null || true
 ```
 
-从浏览器下载的文件带 quarantine 标记，首次运行会被 Gatekeeper 拦下，去掉它：
+`curl` 的 `-f` 让下载失败时不留半截文件，`-O` 按服务器上的文件名存盘。最后一行是去掉浏览器下载附带的 quarantine 标记；用 `curl` 下的文件没有这个标记，那行会静默跳过，不用管。
 
-```bash
-xattr -d com.apple.quarantine ~/.local/bin/bsmm
-```
-
-用 `curl`、`git clone` 或自己编译的二进制没有这个标记，跳过即可。
+在网页上手动下载的话，把两个文件放到同一目录后，从 `shasum` 那行开始跑即可。
 
 ### 从源码编译
 
@@ -510,23 +510,23 @@ Pick the package that matches your Mac on [Releases](https://github.com/Jeasin/B
 
 `uname -m` tells you which: `arm64` is Apple Silicon, `x86_64` is Intel. All three contain the same program, only the compilation target differs — a single-architecture package is half the size of the universal one, so picking your machine saves bandwidth.
 
-Each package has a matching `.sha256`. Verify, unpack and install (set `A` to the tag you downloaded):
+The block below downloads, verifies, unpacks and installs in one go — change the first two lines and paste the whole thing (it works from any directory; the files land there):
 
 ```bash
 V=1.0.0
 A=arm64    # arm64 / x86_64 / universal
+B="https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/download/v$V"
+curl -fLO "$B/bsmm-$V-macos-$A.tar.gz"
+curl -fLO "$B/bsmm-$V-macos-$A.tar.gz.sha256"
 shasum -a 256 -c bsmm-$V-macos-$A.tar.gz.sha256    # must print OK
 tar -xzf bsmm-$V-macos-$A.tar.gz
 install -m 755 bsmm ~/.local/bin/bsmm
+xattr -d com.apple.quarantine ~/.local/bin/bsmm 2>/dev/null || true
 ```
 
-Files downloaded through a browser carry a quarantine flag and Gatekeeper blocks the first run. Clear it:
+`-f` makes `curl` leave no half-written file when a download fails, `-O` keeps the server-side filename. The last line removes the quarantine flag that browsers attach; files fetched with `curl` never carry it, so that line silently does nothing.
 
-```bash
-xattr -d com.apple.quarantine ~/.local/bin/bsmm
-```
-
-Binaries fetched with `curl`, built from source or cloned with `git` have no such flag — skip that line.
+If you downloaded the two files by hand instead, put them in the same directory and start from the `shasum` line.
 
 ### Build from source
 
