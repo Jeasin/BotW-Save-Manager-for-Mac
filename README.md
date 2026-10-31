@@ -49,9 +49,9 @@ Switch → Wii U（含 1.9.0 存档的降级）：
 | 项目 | 状态 |
 |---|---|
 | 开发与测试环境 | macOS 26.5.2，Apple Silicon（arm64），rustc 1.99 |
-| 架构 | Release 提供 arm64 + x86_64 通用二进制。arm64 已实测；x86_64 可编译通过、`lipo` 合成后能运行，但未在 Intel 真机上验证 |
+| 架构 | Release 分别提供 arm64、x86_64 和两者通用的三个包。arm64 已实测；x86_64 编译通过、`lipo` 合成后能运行，但未在 Intel 真机上验证 |
 | 依赖 | 仅 Rust 标准库 + 系统 `libSystem`。无需 .NET、Python、Homebrew 运行时 |
-| 产物 | 单个可执行文件 `bsmm`，通用二进制约 730 KB，单架构约 362 KB |
+| 产物 | 三个包：arm64 191 KB、x86_64 201 KB、通用 378 KB（解压后 362 / 363 / 730 KB） |
 | 签名 | 不做代码签名，也没有公证。从 Release 下载的二进制首次运行要去掉 quarantine，命令见上文「下载预编译版本」 |
 
 macOS 的 `~/Downloads`、`~/Desktop` 会在首次访问时弹出隐私授权。授权被拒时系统会允许写入但拒绝 `rename`，工具会自动回退为“复制已完成的临时目录到目标位置”，结果一致。
@@ -75,12 +75,23 @@ Ryujinx ~/Library/Application Support/Ryujinx/bis/user/save/0000000000000002/0/
 
 ### 下载预编译版本（不用装 Rust）
 
-到 [Releases](https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/latest) 下载 `bsmm-1.0.0-macos-universal.tar.gz` 与同名 `.sha256`，校验后安装：
+到 [Releases](https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/latest) 按机器挑一个包：
+
+| 你的 Mac | 下载 | 包体积 |
+|---|---|---|
+| Apple Silicon（M1 及以后） | `bsmm-1.0.0-macos-arm64.tar.gz` | 191 KB |
+| Intel | `bsmm-1.0.0-macos-x86_64.tar.gz` | 201 KB |
+| 不确定，或者想一个文件到处跑 | `bsmm-1.0.0-macos-universal.tar.gz` | 378 KB |
+
+分不清就跑 `uname -m`：输出 `arm64` 是 Apple Silicon，`x86_64` 是 Intel。三个包里的程序功能完全一样，只是编译目标不同；单架构包只有通用包的一半大，所以按机器挑更省事。
+
+每个包都有同名 `.sha256`。校验并安装（把 `A` 换成你下的那个标签）：
 
 ```bash
-V=1.0.0    # 换成你下载的那个版本
-shasum -a 256 -c bsmm-$V-macos-universal.tar.gz.sha256    # 输出 OK 才继续
-tar -xzf bsmm-$V-macos-universal.tar.gz
+V=1.0.0
+A=arm64    # arm64 / x86_64 / universal
+shasum -a 256 -c bsmm-$V-macos-$A.tar.gz.sha256    # 输出 OK 才继续
+tar -xzf bsmm-$V-macos-$A.tar.gz
 install -m 755 bsmm ~/.local/bin/bsmm
 ```
 
@@ -321,21 +332,30 @@ cargo build --release
 
 **1. 定版本号**：改 `Cargo.toml` 的 `version`，它决定 `bsmm --version` 的输出；tag 用同一个号，前面加 `v`。
 
-**2. 构建通用二进制并打包**：两种架构各编译一次再合成，Intel 机器也能跑。
+**2. 构建并打包**：两个架构各编译一次，再合成一个通用版，一共三个包。
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin   # 只需一次
 cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-apple-darwin
-lipo -create -output bsmm \
+lipo -create -output bsmm-universal \
   target/aarch64-apple-darwin/release/bsmm \
   target/x86_64-apple-darwin/release/bsmm
 
-lipo -archs bsmm                       # 应输出 "x86_64 arm64"
 V=1.0.0
-tar -czf bsmm-$V-macos-universal.tar.gz bsmm
-shasum -a 256 bsmm-$V-macos-universal.tar.gz > bsmm-$V-macos-universal.tar.gz.sha256
+pack() {   # $1 = 架构标签（写进文件名）, $2 = 要装的二进制
+  rm -rf stage && mkdir stage
+  cp "$2" stage/bsmm && cp LICENSE.md NOTICE stage/
+  tar -czf bsmm-$V-macos-$1.tar.gz -C stage bsmm LICENSE.md NOTICE
+  shasum -a 256 bsmm-$V-macos-$1.tar.gz > bsmm-$V-macos-$1.tar.gz.sha256
+  rm -rf stage
+}
+pack arm64     target/aarch64-apple-darwin/release/bsmm
+pack x86_64    target/x86_64-apple-darwin/release/bsmm
+pack universal bsmm-universal
 ```
+
+三个包分别是 Apple Silicon、Intel 和两者通吃。单架构包只有通用包的一半大，所以三个都要发，不能只发通用包——否则 Apple Silicon 用户白下一倍的体积。
 
 **3. 提交、打 tag、推送**
 
@@ -349,15 +369,15 @@ git push origin v1.0.0
 **4. 发布**：装了 [GitHub CLI](https://cli.github.com/) 的话一条命令搞定，附件会自动上传：
 
 ```bash
-gh release create v1.0.0 \
-  bsmm-1.0.0-macos-universal.tar.gz \
-  bsmm-1.0.0-macos-universal.tar.gz.sha256 \
+gh release create v1.0.0 bsmm-1.0.0-macos-*.tar.gz* \
   --title "bsmm v1.0.0" --generate-notes
 ```
 
+通配符会展开成 6 个文件（3 个包 + 3 个校验值）。注意别在还留着旧版本包的目录里跑，否则会把旧包一起传上去。
+
 `--generate-notes` 会让 GitHub 按两次 tag 之间的提交自动生成说明；想自己写就换成 `--notes-file 说明.md`。
 
-不装 `gh` 就在网页上做：仓库首页右侧 **Releases** → **Draft a new release** → *Choose a tag* 里选第 3 步推上去的 `v1.0.0` → 填标题与说明 → 把 `.tar.gz` 和 `.sha256` 拖进附件区 → **Publish release**。tag 没先推上去，下拉框里就选不到。
+不装 `gh` 就在网页上做：仓库首页右侧 **Releases** → **Draft a new release** → *Choose a tag* 里选第 3 步推上去的 `v1.0.0` → 填标题与说明 → 把 3 个 `.tar.gz` 和 3 个 `.sha256` 一起拖进附件区 → **Publish release**。tag 没先推上去，下拉框里就选不到。
 
 两个容易踩的地方：
 
@@ -454,9 +474,9 @@ The tool does three things:
 | | |
 |---|---|
 | Developed and tested on | macOS 26.5.2, Apple Silicon (arm64), rustc 1.99 |
-| Architectures | releases ship a universal arm64 + x86_64 binary. arm64 is verified; x86_64 compiles and the merged binary runs, but it has not been tested on an Intel Mac |
+| Architectures | releases ship three packages: arm64, x86_64 and a universal one. arm64 is verified; x86_64 compiles and runs, but has not been tested on an Intel Mac |
 | Dependencies | Rust standard library and the system `libSystem`. No .NET, Python or Homebrew runtime needed |
-| Artifact | one executable, `bsmm`, about 730 KB universal, about 362 KB per architecture |
+| Artifact | three packages: 191 KB arm64, 201 KB x86_64, 378 KB universal (362 / 363 / 730 KB once unpacked) |
 | Signing | not code-signed or notarised. A binary from a release needs its quarantine flag removed the first time — see "Download a prebuilt binary" above |
 
 macOS asks for privacy permission the first time a process touches `~/Downloads` or `~/Desktop`. When that permission is denied the system still allows writing but refuses `rename`; the tool falls back to copying the finished temporary folder into place, with the same result.
@@ -480,12 +500,23 @@ Ryujinx ~/Library/Application Support/Ryujinx/bis/user/save/0000000000000002/0/
 
 ### Download a prebuilt binary (no Rust needed)
 
-Grab `bsmm-1.0.0-macos-universal.tar.gz` and its `.sha256` from [Releases](https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/latest), verify, then install:
+Pick the package that matches your Mac on [Releases](https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/latest):
+
+| Your Mac | Download | Package size |
+|---|---|---|
+| Apple Silicon (M1 and later) | `bsmm-1.0.0-macos-arm64.tar.gz` | 191 KB |
+| Intel | `bsmm-1.0.0-macos-x86_64.tar.gz` | 201 KB |
+| Not sure, or want one file for both | `bsmm-1.0.0-macos-universal.tar.gz` | 378 KB |
+
+`uname -m` tells you which: `arm64` is Apple Silicon, `x86_64` is Intel. All three contain the same program, only the compilation target differs — a single-architecture package is half the size of the universal one, so picking your machine saves bandwidth.
+
+Each package has a matching `.sha256`. Verify, unpack and install (set `A` to the tag you downloaded):
 
 ```bash
-V=1.0.0    # the version you downloaded
-shasum -a 256 -c bsmm-$V-macos-universal.tar.gz.sha256    # must print OK
-tar -xzf bsmm-$V-macos-universal.tar.gz
+V=1.0.0
+A=arm64    # arm64 / x86_64 / universal
+shasum -a 256 -c bsmm-$V-macos-$A.tar.gz.sha256    # must print OK
+tar -xzf bsmm-$V-macos-$A.tar.gz
 install -m 755 bsmm ~/.local/bin/bsmm
 ```
 
@@ -725,21 +756,30 @@ Four steps, the first three on your machine.
 
 **1. Pick the version**: bump `version` in `Cargo.toml` — it is what `bsmm --version` prints. The tag is the same number with a `v` in front.
 
-**2. Build a universal binary and package it**: compile both architectures, then merge them so Intel Macs work too.
+**2. Build and package**: compile both architectures, merge a universal one, and ship all three.
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin   # once
 cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-apple-darwin
-lipo -create -output bsmm \
+lipo -create -output bsmm-universal \
   target/aarch64-apple-darwin/release/bsmm \
   target/x86_64-apple-darwin/release/bsmm
 
-lipo -archs bsmm                       # prints "x86_64 arm64"
 V=1.0.0
-tar -czf bsmm-$V-macos-universal.tar.gz bsmm
-shasum -a 256 bsmm-$V-macos-universal.tar.gz > bsmm-$V-macos-universal.tar.gz.sha256
+pack() {   # $1 = tag used in the filename, $2 = binary to package
+  rm -rf stage && mkdir stage
+  cp "$2" stage/bsmm && cp LICENSE.md NOTICE stage/
+  tar -czf bsmm-$V-macos-$1.tar.gz -C stage bsmm LICENSE.md NOTICE
+  shasum -a 256 bsmm-$V-macos-$1.tar.gz > bsmm-$V-macos-$1.tar.gz.sha256
+  rm -rf stage
+}
+pack arm64     target/aarch64-apple-darwin/release/bsmm
+pack x86_64    target/x86_64-apple-darwin/release/bsmm
+pack universal bsmm-universal
 ```
+
+That is Apple Silicon, Intel, and one that runs on both. Ship all three: a single-architecture package is half the size of the universal one, so publishing only the universal build makes Apple Silicon users download twice the bytes for nothing.
 
 **3. Commit, tag, push**
 
@@ -753,15 +793,15 @@ git push origin v1.0.0
 **4. Publish**: with [GitHub CLI](https://cli.github.com/) it is one command, and the assets are uploaded for you:
 
 ```bash
-gh release create v1.0.0 \
-  bsmm-1.0.0-macos-universal.tar.gz \
-  bsmm-1.0.0-macos-universal.tar.gz.sha256 \
+gh release create v1.0.0 bsmm-1.0.0-macos-*.tar.gz* \
   --title "bsmm v1.0.0" --generate-notes
 ```
 
+The glob expands to six files (three packages and three checksums). Do not run it in a directory that still holds packages from an older version, or they get uploaded too.
+
 `--generate-notes` has GitHub build the notes from the commits between tags; pass `--notes-file notes.md` instead to write them yourself.
 
-Without `gh`, do it on the web: **Releases** on the right of the repo page → **Draft a new release** → pick the `v1.0.0` tag you pushed → fill in title and notes → drag the `.tar.gz` and `.sha256` into the asset box → **Publish release**. If the tag was never pushed, it will not be in the dropdown.
+Without `gh`, do it on the web: **Releases** on the right of the repo page → **Draft a new release** → pick the `v1.0.0` tag you pushed → fill in title and notes → drag all three `.tar.gz` files and their `.sha256` into the asset box → **Publish release**. If the tag was never pushed, it will not be in the dropdown.
 
 Two things that bite:
 
