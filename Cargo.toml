@@ -1,0 +1,25 @@
+[package]
+name = "botw-save-convert"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+description = "A minimal macOS/Linux CLI for converting Breath of the Wild save files between Wii U and Switch"
+publish = false
+
+[lib]
+name = "botw_save_convert"
+path = "src/lib.rs"
+
+[[bin]]
+name = "botw-convert"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

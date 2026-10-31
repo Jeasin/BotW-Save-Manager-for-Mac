@@ -1,0 +1,24 @@
+botw-save-convert
+=================
+
+This project is a Rust reimplementation of the save conversion logic from
+BotW Save Manager:
+
+    https://github.com/DeltaJordan/BotW-Save-Manager
+
+BotW Save Manager is itself a fork of WemI0's BOTW_SaveConv. The original
+project credits Jordan Marine (DeltaJordan) and Arch Leaders, among other
+contributors.
+
+The conversion algorithm, version/header tables, hash table, and item table in
+this project are ported from the original C# implementation. The original work
+is licensed under the GNU Affero General Public License, version 3.
+
+This Rust port is distributed under the GNU Affero General Public License,
+version 3 only. See LICENSE for the full text.
+
+Modifications and Rust implementation:
+Copyright (C) 2026 botw-save-convert contributors
+
+This project is not affiliated with Nintendo. The Legend of Zelda: Breath of
+the Wild and related trademarks are property of Nintendo.
