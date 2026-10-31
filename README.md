@@ -20,7 +20,7 @@ Switch → Wii U（含 1.9.0 存档的降级）：
 
 ![终端截图：bsmm 把一份 Switch 存档转换为 Wii U 存档，其中 4 个槽位版本比 Wii U 新，会丢弃新字段后降级](assets/switch-to-wiiu.webp)
 
-两张截图拍摄于改名前（当时命令叫 `botw-convert`），当前命令是 `bsmm`，输出格式不变。
+截图是真实存档的运行输出，涉及用户目录的部分已打码。
 
 ## 这是什么
 
@@ -41,7 +41,7 @@ Switch → Wii U（含 1.9.0 存档的降级）：
 - **预检模式**：`--dry-run` 只读不写，可以先看报告再决定
 - **输入只读**：绝不修改输入目录，输出目录必须不存在
 - **原子写入**：先在临时目录转换，逐个校验后整体改名到目标位置；失败自动清理
-- **单文件**：约 362 KB，无运行时依赖，只链接系统 `libSystem`
+- **单文件**：通用二进制约 730 KB（单架构约 362 KB），无运行时依赖，只链接系统 `libSystem`
 - **零 crate**：`[dependencies]` 为空，构建不需要下载任何第三方代码
 
 ## macOS 支持情况
@@ -49,16 +49,16 @@ Switch → Wii U（含 1.9.0 存档的降级）：
 | 项目 | 状态 |
 |---|---|
 | 开发与测试环境 | macOS 26.5.2，Apple Silicon（arm64），rustc 1.99 |
-| 架构 | arm64 已验证；Intel（x86_64）可用同一份源码编译，但未实测 |
+| 架构 | Release 提供 arm64 + x86_64 通用二进制。arm64 已实测；x86_64 可编译通过、`lipo` 合成后能运行，但未在 Intel 真机上验证 |
 | 依赖 | 仅 Rust 标准库 + 系统 `libSystem`。无需 .NET、Python、Homebrew 运行时 |
-| 产物 | 单个可执行文件 `bsmm`，约 362 KB |
-| 签名 | 自行编译的二进制不做代码签名；从本仓库下载他人编译的版本时，可能需要 `xattr -d com.apple.quarantine bsmm` |
+| 产物 | 单个可执行文件 `bsmm`，通用二进制约 730 KB，单架构约 362 KB |
+| 签名 | 不做代码签名，也没有公证。从 Release 下载的二进制首次运行要去掉 quarantine，命令见上文「下载预编译版本」 |
 
 macOS 的 `~/Downloads`、`~/Desktop` 会在首次访问时弹出隐私授权。授权被拒时系统会允许写入但拒绝 `rename`，工具会自动回退为“复制已完成的临时目录到目标位置”，结果一致。
 
 ## 环境要求
 
-**运行**：macOS（arm64 已验证）。不需要安装 Rust。
+**运行**：macOS，Apple Silicon 或 Intel（arm64 已实测，x86_64 未在真机验证）。不需要安装 Rust。
 
 **构建**：Rust 1.85 或更高（使用 edition 2024）。
 
@@ -72,6 +72,27 @@ Ryujinx ~/Library/Application Support/Ryujinx/bis/user/save/0000000000000002/0/
 ```
 
 ## 构建与安装
+
+### 下载预编译版本（不用装 Rust）
+
+到 [Releases](https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/latest) 下载 `bsmm-1.0.0-macos-universal.tar.gz` 与同名 `.sha256`，校验后安装：
+
+```bash
+V=1.0.0    # 换成你下载的那个版本
+shasum -a 256 -c bsmm-$V-macos-universal.tar.gz.sha256    # 输出 OK 才继续
+tar -xzf bsmm-$V-macos-universal.tar.gz
+install -m 755 bsmm ~/.local/bin/bsmm
+```
+
+从浏览器下载的文件带 quarantine 标记，首次运行会被 Gatekeeper 拦下，去掉它：
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/bsmm
+```
+
+用 `curl`、`git clone` 或自己编译的二进制没有这个标记，跳过即可。
+
+### 从源码编译
 
 ```bash
 git clone git@github.com:Jeasin/BotW-Save-Manager-for-Mac.git
@@ -294,6 +315,55 @@ cargo build --release
 
 当前 27 个单元测试 + 24 个集成测试，覆盖：转换常量、平台/版本识别、哈希与物品分支、trackblock 特殊处理、记录表解析与降级、逐槽位动作判定、完整目录转换、`--option-sav` 覆盖、输出保护、`caption.sav` 解析与 CLI 退出码。
 
+## 发布 Release（维护者）
+
+发一个新版本就四步，前三步在本机完成。
+
+**1. 定版本号**：改 `Cargo.toml` 的 `version`，它决定 `bsmm --version` 的输出；tag 用同一个号，前面加 `v`。
+
+**2. 构建通用二进制并打包**：两种架构各编译一次再合成，Intel 机器也能跑。
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin   # 只需一次
+cargo build --release --target aarch64-apple-darwin
+cargo build --release --target x86_64-apple-darwin
+lipo -create -output bsmm \
+  target/aarch64-apple-darwin/release/bsmm \
+  target/x86_64-apple-darwin/release/bsmm
+
+lipo -archs bsmm                       # 应输出 "x86_64 arm64"
+V=1.0.0
+tar -czf bsmm-$V-macos-universal.tar.gz bsmm
+shasum -a 256 bsmm-$V-macos-universal.tar.gz > bsmm-$V-macos-universal.tar.gz.sha256
+```
+
+**3. 提交、打 tag、推送**
+
+```bash
+git commit -am "Release v1.0.0"
+git tag -a v1.0.0 -m "bsmm v1.0.0"
+git push origin main
+git push origin v1.0.0
+```
+
+**4. 发布**：装了 [GitHub CLI](https://cli.github.com/) 的话一条命令搞定，附件会自动上传：
+
+```bash
+gh release create v1.0.0 \
+  bsmm-1.0.0-macos-universal.tar.gz \
+  bsmm-1.0.0-macos-universal.tar.gz.sha256 \
+  --title "bsmm v1.0.0" --generate-notes
+```
+
+`--generate-notes` 会让 GitHub 按两次 tag 之间的提交自动生成说明；想自己写就换成 `--notes-file 说明.md`。
+
+不装 `gh` 就在网页上做：仓库首页右侧 **Releases** → **Draft a new release** → *Choose a tag* 里选第 3 步推上去的 `v1.0.0` → 填标题与说明 → 把 `.tar.gz` 和 `.sha256` 拖进附件区 → **Publish release**。tag 没先推上去，下拉框里就选不到。
+
+两个容易踩的地方：
+
+- tag 名去掉 `v` 前缀后要和 `Cargo.toml` 的 `version` 一致，否则下载页的版本号和 `bsmm --version` 对不上；
+- 附件用 `.tar.gz` 而不是 `.zip`：`tar` 保留可执行权限，解压后直接 `install` 就能用；zip 解出来没有执行位，还要补 `chmod +x`。
+
 ## 与上游项目的差异
 
 本项目**不是**上游代码的编译产物，而是用 Rust 重写的命令行实现。哪些来自上游、哪些是这里新增的：
@@ -376,7 +446,7 @@ The tool does three things:
 - **Dry run**: `--dry-run` reads only
 - **Input is read-only**: the output folder must not exist
 - **Atomic write**: converted into a temporary folder, validated, then renamed into place; failures are cleaned up
-- **Single binary**: ~362 KB, no runtime, links only the system `libSystem`
+- **Single binary**: ~730 KB universal (~362 KB per architecture), no runtime, links only the system `libSystem`
 - **Zero crates**: `[dependencies]` is empty
 
 ## macOS support
@@ -384,16 +454,16 @@ The tool does three things:
 | | |
 |---|---|
 | Developed and tested on | macOS 26.5.2, Apple Silicon (arm64), rustc 1.99 |
-| Architectures | arm64 verified; Intel (x86_64) builds from the same source but is untested |
+| Architectures | releases ship a universal arm64 + x86_64 binary. arm64 is verified; x86_64 compiles and the merged binary runs, but it has not been tested on an Intel Mac |
 | Dependencies | Rust standard library and the system `libSystem`. No .NET, Python or Homebrew runtime needed |
-| Artifact | one executable, `bsmm`, about 362 KB |
-| Signing | locally built binaries are unsigned. If you download a build from someone else, you may need `xattr -d com.apple.quarantine bsmm` |
+| Artifact | one executable, `bsmm`, about 730 KB universal, about 362 KB per architecture |
+| Signing | not code-signed or notarised. A binary from a release needs its quarantine flag removed the first time — see "Download a prebuilt binary" above |
 
 macOS asks for privacy permission the first time a process touches `~/Downloads` or `~/Desktop`. When that permission is denied the system still allows writing but refuses `rename`; the tool falls back to copying the finished temporary folder into place, with the same result.
 
 ## Requirements
 
-**To run**: macOS (arm64 verified). Rust is not required.
+**To run**: macOS, Apple Silicon or Intel (arm64 verified; x86_64 not tested on real hardware). Rust is not required.
 
 **To build**: Rust 1.85 or newer (edition 2024).
 
@@ -407,6 +477,27 @@ Ryujinx ~/Library/Application Support/Ryujinx/bis/user/save/0000000000000002/0/
 ```
 
 ## Build and install
+
+### Download a prebuilt binary (no Rust needed)
+
+Grab `bsmm-1.0.0-macos-universal.tar.gz` and its `.sha256` from [Releases](https://github.com/Jeasin/BotW-Save-Manager-for-Mac/releases/latest), verify, then install:
+
+```bash
+V=1.0.0    # the version you downloaded
+shasum -a 256 -c bsmm-$V-macos-universal.tar.gz.sha256    # must print OK
+tar -xzf bsmm-$V-macos-universal.tar.gz
+install -m 755 bsmm ~/.local/bin/bsmm
+```
+
+Files downloaded through a browser carry a quarantine flag and Gatekeeper blocks the first run. Clear it:
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/bsmm
+```
+
+Binaries fetched with `curl`, built from source or cloned with `git` have no such flag — skip that line.
+
+### Build from source
 
 ```bash
 git clone git@github.com:Jeasin/BotW-Save-Manager-for-Mac.git
@@ -627,6 +718,55 @@ cargo build --release
 ```
 
 27 unit tests and 24 integration tests cover the conversion constants, platform/version detection, the hash and item branches, trackblock handling, record-table parsing and downgrade, per-slot action decisions, a full folder conversion, `--option-sav` override, output protection, `caption.sav` parsing and CLI exit codes.
+
+## Releasing (maintainers)
+
+Four steps, the first three on your machine.
+
+**1. Pick the version**: bump `version` in `Cargo.toml` — it is what `bsmm --version` prints. The tag is the same number with a `v` in front.
+
+**2. Build a universal binary and package it**: compile both architectures, then merge them so Intel Macs work too.
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin   # once
+cargo build --release --target aarch64-apple-darwin
+cargo build --release --target x86_64-apple-darwin
+lipo -create -output bsmm \
+  target/aarch64-apple-darwin/release/bsmm \
+  target/x86_64-apple-darwin/release/bsmm
+
+lipo -archs bsmm                       # prints "x86_64 arm64"
+V=1.0.0
+tar -czf bsmm-$V-macos-universal.tar.gz bsmm
+shasum -a 256 bsmm-$V-macos-universal.tar.gz > bsmm-$V-macos-universal.tar.gz.sha256
+```
+
+**3. Commit, tag, push**
+
+```bash
+git commit -am "Release v1.0.0"
+git tag -a v1.0.0 -m "bsmm v1.0.0"
+git push origin main
+git push origin v1.0.0
+```
+
+**4. Publish**: with [GitHub CLI](https://cli.github.com/) it is one command, and the assets are uploaded for you:
+
+```bash
+gh release create v1.0.0 \
+  bsmm-1.0.0-macos-universal.tar.gz \
+  bsmm-1.0.0-macos-universal.tar.gz.sha256 \
+  --title "bsmm v1.0.0" --generate-notes
+```
+
+`--generate-notes` has GitHub build the notes from the commits between tags; pass `--notes-file notes.md` instead to write them yourself.
+
+Without `gh`, do it on the web: **Releases** on the right of the repo page → **Draft a new release** → pick the `v1.0.0` tag you pushed → fill in title and notes → drag the `.tar.gz` and `.sha256` into the asset box → **Publish release**. If the tag was never pushed, it will not be in the dropdown.
+
+Two things that bite:
+
+- the tag without its `v` must equal `version` in `Cargo.toml`, or the release page and `bsmm --version` disagree;
+- ship a `.tar.gz`, not a `.zip`: `tar` keeps the executable bit so `install` works right after unpacking, while a zip loses it and needs a `chmod +x`.
 
 ## Differences from upstream
 

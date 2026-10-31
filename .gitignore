@@ -1,6 +1,9 @@
 # Cargo build output
 /target
 
+# Release artefacts (packaged for upload, not tracked)
+/dist
+
 # macOS Finder metadata and local logs
 .DS_Store
 /Logs
