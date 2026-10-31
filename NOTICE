@@ -1,31 +1,67 @@
-botw-save-convert
-=================
+BotW Save Manager for Mac
+=========================
 
-This project is a Rust reimplementation of the save conversion logic from
-BotW Save Manager:
+This program is a Rust rewrite of the save conversion logic of BotW Save
+Manager, a Windows/Linux desktop and console application:
 
     https://github.com/DeltaJordan/BotW-Save-Manager
 
-BotW Save Manager is itself a fork of WemI0's BOTW_SaveConv. The original
-project credits Jordan Marine (DeltaJordan) and Arch Leaders, among other
-contributors.
+    Copyright (C) the BotW Save Manager authors and contributors,
+    including Jordan Marine (DeltaJordan) and Arch Leaders.
 
-The conversion algorithm, version/header tables, hash table, and item table in
-this project are ported from the original C# implementation. The original work
-is licensed under the GNU Affero General Public License, version 3.
+BotW Save Manager is itself a fork of WemI0's BOTW_SaveConv, which supplied the
+original format research. The upstream project is licensed under the GNU Affero
+General Public License, version 3 (see LICENSE.md, which is the upstream licence
+text, byte for byte).
 
-Added in this port (not present upstream): a reader for the record-table
-container shared by option.sav, game_data.sav and caption.sav, and a downgrade
-path that drops the fields introduced after Wii U 1.5.0 and retags the header
-to 0x471b. The new field hashes were derived by diffing real v1.5 / v1.6 /
-v1.8-v1.9 saves, and cross-checked against the format notes of
-https://github.com/fabiangonzalezdev/Universal-BOTW-Save-Manager
+What was taken from upstream
+-----------------------------
 
-This Rust port is distributed under the GNU Affero General Public License,
-version 3 only. See LICENSE for the full text.
+Ported from the C# implementation in BotwSaveManager.Core/BotwSave.cs (the
+`Headers`, `Versions`, `Items` and `Hashes` tables and the `ConvertPlatform`
+loop):
 
-Modifications and Rust implementation:
-Copyright (C) 2026 botw-save-convert contributors
+  - the byte-swap algorithm used on save files, including the special case for
+    the 65536-byte trackblock files;
+  - the table of 44 field hashes whose values need no swap;
+  - the table of 60 item-name hashes treated as text;
+  - the version-code to game-version table and the platform header shapes.
 
-This project is not affiliated with Nintendo. The Legend of Zelda: Breath of
-the Wild and related trademarks are property of Nintendo.
+These are the parts of this project that are not original work. Everything
+below is a change made for this rewrite and is not present upstream.
+
+What this rewrite adds
+----------------------
+
+  - A reader for the record-table container shared by option.sav, game_data.sav
+    and caption.sav (version word, two fixed words, then { hash, value } pairs
+    terminated by 0xffffffff), plus a downgrade path that drops the fields
+    introduced after Wii U 1.5.0 and retags the header to 0x471b. Upstream
+    requires both sides to be on the same game version ("upgrade/downgrade
+    untested"); this avoids that by performing the downgrade.
+  - A caption.sav reader that reports the save-select information: write time,
+    play time, region, and manual/autosave plus normal/Master Mode.
+  - Per-file platform detection, so a slot that already uses the target byte
+    order is copied instead of being swapped twice.
+  - Input is opened read-only, output must not pre-exist, the whole conversion
+    happens in a hidden temporary folder and is renamed into place only after
+    the result is re-read and validated.
+  - A macOS fallback for the final rename, which some protected folders
+    (~/Downloads, ~/Desktop) refuse even though writing is allowed.
+  - An English-language CLI with a dry-run mode and per-slot reporting.
+
+The record-table hashes and the downgrade field lists were derived by diffing
+real v1.5 / v1.6 / v1.8-v1.9 saves, and cross-checked against the format notes
+of https://github.com/fabiangonzalezdev/Universal-BOTW-Save-Manager
+
+Licence
+-------
+
+Because this work is derived from an AGPL-3.0 project, it is distributed under
+the GNU Affero General Public License, version 3 only. See LICENSE.md for the
+full text. If you run a modified version of this program on a server and let
+other people use it, the AGPL requires you to offer them the source.
+
+This project is not affiliated with, endorsed by, or sponsored by Nintendo.
+The Legend of Zelda: Breath of the Wild and related names are trademarks of
+Nintendo.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use botw_save_convert::Platform;
-use botw_save_convert::save::{
+use bsmm::Platform;
+use bsmm::save::{
     ConvertOptions, ConvertReport, SaveInfo, SlotAction, convert_save, default_output_path,
     inspect_save,
 };
@@ -31,7 +31,7 @@ struct TestDirectory {
 impl TestDirectory {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "botw-save-convert-test-{}-{}",
+            "bsmm-test-{}-{}",
             std::process::id(),
             TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -68,7 +68,7 @@ fn try_convert(
     input: &Path,
     output: &Path,
     options: &ConvertOptions,
-) -> botw_save_convert::Result<ConvertReport> {
+) -> bsmm::Result<ConvertReport> {
     let info = inspect_save(input)?;
     convert_save(&info, output, options)
 }
@@ -596,14 +596,14 @@ fn fails_loudly_when_a_newer_file_is_not_a_record_table() {
 
 #[test]
 fn cli_help_and_usage_errors_have_the_expected_exit_codes() {
-    let help = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let help = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .arg("--help")
         .output()
         .unwrap();
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("Usage:"));
 
-    let missing = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let missing = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .output()
         .unwrap();
     assert_eq!(missing.status.code(), Some(2));
@@ -618,7 +618,7 @@ fn cli_converts_and_dry_run_writes_nothing() {
     let output = temporary.path().join("converted");
     make_save(&input, false);
 
-    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .arg("--dry-run")
         .arg(&input)
         .arg(&dry_output)
@@ -635,7 +635,7 @@ fn cli_converts_and_dry_run_writes_nothing() {
     assert!(stdout.contains("Dry run"));
     assert!(!dry_output.exists());
 
-    let conversion = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let conversion = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .arg(&input)
         .arg(&output)
         .output()
@@ -656,7 +656,7 @@ fn cli_dry_run_tolerates_an_existing_output_folder() {
     make_save(&input, false);
     fs::create_dir(&output).unwrap();
 
-    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .arg("--dry-run")
         .arg(&input)
         .arg(&output)
@@ -684,7 +684,7 @@ fn cli_downgrades_a_switch_2_edition_save() {
     let output = temporary.path().join("wiiu");
     make_newer_save(&input);
 
-    let conversion = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let conversion = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .arg(&input)
         .arg(&output)
         .output()
@@ -709,7 +709,7 @@ fn cli_uses_the_default_output_when_only_the_input_is_given() {
     let input = temporary.path().join("save");
     make_save(&input, false);
 
-    let conversion = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let conversion = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .arg(&input)
         .output()
         .unwrap();
@@ -810,7 +810,7 @@ fn cli_shows_what_the_save_select_screen_shows() {
     )
     .unwrap();
 
-    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_bsmm"))
         .arg("--dry-run")
         .arg(&input)
         .output()

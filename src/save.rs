@@ -1171,7 +1171,7 @@ impl TemporaryDirectory {
             .as_nanos();
 
         for attempt in 0..100 {
-            let path = parent.join(format!(".botw-convert-{}-{stamp}-{attempt}", process::id()));
+            let path = parent.join(format!(".bsmm-{}-{stamp}-{attempt}", process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => {
                     return Ok(Self { path, armed: true });

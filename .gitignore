@@ -1,3 +1,9 @@
+# Cargo build output
 /target
-/Logs
+
+# macOS Finder metadata and local logs
 .DS_Store
+/Logs
+
+# Local test scratch space
+/tmp

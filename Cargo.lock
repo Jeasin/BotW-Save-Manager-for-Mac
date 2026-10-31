@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "botw-save-convert"
-version = "0.4.0"
+name = "botw-save-manager-for-mac"
+version = "1.0.0"

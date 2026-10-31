@@ -1,18 +1,19 @@
 [package]
-name = "botw-save-convert"
-version = "0.4.0"
+name = "botw-save-manager-for-mac"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
-description = "A minimal macOS/Linux CLI for converting Breath of the Wild save files between Wii U and Switch"
+description = "Command-line Breath of the Wild save converter between Wii U and Switch, built for macOS"
+repository = "https://github.com/Jeasin/BotW-Save-Manager-for-Mac"
 publish = false
 
 [lib]
-name = "botw_save_convert"
+name = "bsmm"
 path = "src/lib.rs"
 
 [[bin]]
-name = "botw-convert"
+name = "bsmm"
 path = "src/main.rs"
 
 [dependencies]

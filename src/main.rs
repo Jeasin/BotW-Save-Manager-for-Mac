@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use botw_save_convert::caption::Caption;
-use botw_save_convert::cli::{Args, Command, HELP, parse_args};
-use botw_save_convert::error::{Error, Result};
-use botw_save_convert::save::{
+use bsmm::caption::Caption;
+use bsmm::cli::{Args, Command, HELP, parse_args};
+use bsmm::error::{Error, Result};
+use bsmm::save::{
     ConvertOptions, ConvertReport, SaveInfo, SaveSlot, SlotAction, convert_save,
     default_output_path, file_decisions, inspect_save, output_warning,
 };
@@ -20,7 +20,7 @@ fn run() -> i32 {
         Ok(command) => command,
         Err(message) => {
             eprintln!("error: {message}");
-            eprintln!("Try 'botw-convert --help' for usage.");
+            eprintln!("Try 'bsmm --help' for usage.");
             return 2;
         }
     };
@@ -31,7 +31,7 @@ fn run() -> i32 {
             Ok(())
         }
         Command::Version => {
-            println!("botw-convert {}", env!("CARGO_PKG_VERSION"));
+            println!("bsmm {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Command::Run(args) => run_command(&args),

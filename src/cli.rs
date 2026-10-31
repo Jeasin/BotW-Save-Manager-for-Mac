@@ -4,13 +4,13 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub const HELP: &str = concat!(
-    "botw-convert ",
+    "bsmm ",
     env!("CARGO_PKG_VERSION"),
-    "\n",
+    " - BotW Save Manager for Mac\n",
     "Convert Breath of the Wild save folders between Wii U and Switch.\n",
     "\n",
     "Usage:\n",
-    "    botw-convert [OPTIONS] <INPUT_DIR> [OUTPUT_DIR]\n",
+    "    bsmm [OPTIONS] <INPUT_DIR> [OUTPUT_DIR]\n",
     "\n",
     "Arguments:\n",
     "    <INPUT_DIR>     Folder containing option.sav and the save slots\n",
@@ -28,6 +28,11 @@ pub const HELP: &str = concat!(
     "    -v, --verbose               List every .sav file that is processed\n",
     "    -h, --help                  Print this help\n",
     "    -V, --version               Print the version\n",
+    "\n",
+    "Examples:\n",
+    "    bsmm --dry-run ~/Downloads/zelda-save\n",
+    "    bsmm ~/Downloads/zelda-save\n",
+    "    bsmm ~/Downloads/zelda-save ~/Downloads/zelda-switch\n",
     "\n",
     "Exit codes:\n",
     "    0  success            1  failure            2  bad usage\n",
@@ -56,6 +61,11 @@ pub const HELP: &str = concat!(
     "    file, the region, and whether it is the manual save or an autosave.\n",
     "    Normal mode keeps one manual save and five autosaves, Master Mode one of\n",
     "    each. Times are the reading of the game's own clock.\n",
+    "\n",
+    "Project:\n",
+    "    https://github.com/Jeasin/BotW-Save-Manager-for-Mac\n",
+    "    Based on BotW Save Manager by DeltaJordan, AGPL-3.0-only.\n",
+    "    Not affiliated with Nintendo.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
