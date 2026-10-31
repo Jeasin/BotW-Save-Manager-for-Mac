@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use botw_save_convert::caption::Caption;
 use botw_save_convert::cli::{Args, Command, HELP, parse_args};
 use botw_save_convert::error::{Error, Result};
 use botw_save_convert::save::{
-    ConvertOptions, ConvertReport, SaveInfo, SlotAction, convert_save, default_output_path,
-    file_decisions, inspect_save, output_warning,
+    ConvertOptions, ConvertReport, SaveInfo, SaveSlot, SlotAction, convert_save,
+    default_output_path, file_decisions, inspect_save, output_warning,
 };
 use std::env;
 use std::path::Path;
@@ -111,14 +112,55 @@ fn print_summary(info: &SaveInfo, output: &Path) {
 fn action_text(action: SlotAction, info: &SaveInfo) -> String {
     match action {
         SlotAction::Convert => format!("convert to {}", info.target().label()),
-        SlotAction::ConvertDowngrade => {
-            format!("convert to {}, drop newer fields", info.target().label())
-        }
+        SlotAction::ConvertDowngrade => "convert + downgrade".to_owned(),
         SlotAction::Copy => format!("keep, already {}", info.target().label()),
-        SlotAction::KeepDowngrade => "keep, drop newer fields".to_owned(),
+        SlotAction::KeepDowngrade => "keep + downgrade".to_owned(),
         SlotAction::Drop => "drop, unknown newer version".to_owned(),
         SlotAction::Blocked => "BLOCKED, needs --allow-unsupported".to_owned(),
     }
+}
+
+/// Longest region name printed in the slot table; longer names are shortened so
+/// the row stays on one line.
+const PLACE_WIDTH: usize = 16;
+
+fn shorten(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn saved_text(slot: &SaveSlot) -> String {
+    slot.caption
+        .as_ref()
+        .and_then(Caption::saved_label)
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn play_text(slot: &SaveSlot) -> String {
+    slot.caption
+        .as_ref()
+        .and_then(Caption::play_label)
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn kind_text(slot: &SaveSlot) -> String {
+    slot.caption
+        .as_ref()
+        .map_or("-", Caption::kind_label)
+        .to_owned()
+}
+
+fn place_text(slot: &SaveSlot) -> String {
+    slot.caption
+        .as_ref()
+        .and_then(Caption::location_label)
+        .map(|text| shorten(&text, PLACE_WIDTH))
+        .unwrap_or_else(|| "-".to_owned())
 }
 
 fn print_slots(info: &SaveInfo, options: &ConvertOptions) {
@@ -140,22 +182,69 @@ fn print_slots(info: &SaveInfo, options: &ConvertOptions) {
         .max()
         .unwrap_or(7)
         .max(7);
+    // The save-select columns only make sense when the save ships caption.sav
+    // files, which every real save does.
+    let with_caption = info.slots.iter().any(|slot| slot.caption.is_some());
+    let kind_width = info
+        .slots
+        .iter()
+        .map(|slot| kind_text(slot).len())
+        .max()
+        .unwrap_or(1)
+        .max(4);
+    let place_width = info
+        .slots
+        .iter()
+        .map(|slot| place_text(slot).chars().count())
+        .max()
+        .unwrap_or(1)
+        .max(5);
 
     println!();
-    println!(
-        "{:<dir_width$}  {:<8}  {:<version_width$}  {:>9}  Action",
-        "Slot", "Stored", "Version", "Bytes"
-    );
+    if with_caption {
+        println!(
+            "{:<dir_width$}  {:<6}  {:<version_width$}  {:>9}  {:<16}  {:>7}  {:<kind_width$}  {:<place_width$}  Action",
+            "Slot", "Stored", "Version", "Bytes", "Saved", "Play", "Kind", "Place"
+        );
+    } else {
+        println!(
+            "{:<dir_width$}  {:<6}  {:<version_width$}  {:>9}  Action",
+            "Slot", "Stored", "Version", "Bytes"
+        );
+    }
 
     for slot in &info.slots {
         let action = info.slot_action(slot, options);
+        if with_caption {
+            println!(
+                "{:<dir_width$}  {:<6}  {:<version_width$}  {:>9}  {:<16}  {:>7}  {:<kind_width$}  {:<place_width$}  {}",
+                slot.directory,
+                slot.platform_label(),
+                slot.version_label(),
+                slot.size,
+                saved_text(slot),
+                play_text(slot),
+                kind_text(slot),
+                place_text(slot),
+                action_text(action, info)
+            );
+        } else {
+            println!(
+                "{:<dir_width$}  {:<6}  {:<version_width$}  {:>9}  {}",
+                slot.directory,
+                slot.platform_label(),
+                slot.version_label(),
+                slot.size,
+                action_text(action, info)
+            );
+        }
+    }
+
+    if with_caption {
+        println!();
+        println!("Kind is read from each slot's caption.sav: normal mode has one manual save");
         println!(
-            "{:<dir_width$}  {:<8}  {:<version_width$}  {:>9}  {}",
-            slot.directory,
-            slot.platform_label(),
-            slot.version_label(),
-            slot.size,
-            action_text(action, info)
+            "and five autosaves, Master Mode one of each. Time is the moment the game wrote it."
         );
     }
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::caption::Caption;
 use crate::convert::convert_sav_bytes;
 use crate::error::{Error, Result};
 use crate::platform::{Platform, WII_U_SAFE_VERSION};
@@ -13,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const OPTION_FILE: &str = "option.sav";
 const GAME_DATA_FILE: &str = "game_data.sav";
+const CAPTION_FILE: &str = "caption.sav";
 
 /// What the converter will do with one save slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +45,10 @@ pub struct SaveSlot {
     /// save as a whole when a folder was merged or partially converted.
     pub platform: Option<Platform>,
     pub raw_version: Option<u16>,
+    /// What the save-select screen shows for this slot, read from the
+    /// `caption.sav` beside it. `None` when that file is absent or unreadable;
+    /// it never affects the conversion itself.
+    pub caption: Option<Caption>,
 }
 
 impl SaveSlot {
@@ -471,6 +477,9 @@ pub fn inspect_save(input: &Path) -> Result<SaveInfo> {
         let size = fs::metadata(&path)
             .map_err(|error| Error::io("inspect save slot", &path, error))?
             .len();
+        let caption = fs::read(path.with_file_name(CAPTION_FILE))
+            .ok()
+            .and_then(|bytes| Caption::parse(&bytes));
 
         match slot_platform {
             Some(detected) if detected != platform => foreign_slots.push(relative_path.clone()),
@@ -492,6 +501,7 @@ pub fn inspect_save(input: &Path) -> Result<SaveInfo> {
             size,
             platform: slot_platform,
             raw_version,
+            caption,
         });
     }
 

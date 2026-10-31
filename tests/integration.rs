@@ -750,3 +750,80 @@ fn save_info_breakdown_counts_duplicate_copies() {
             .contains("NSConflict")
     }));
 }
+
+/// `caption.sav` stores strings as one record per four bytes, the hash
+/// repeating, and those bytes keep their order on both platforms.
+fn caption_table(
+    platform: Platform,
+    records: &[(u32, u32)],
+    strings: &[(u32, &str, usize)],
+) -> Vec<u8> {
+    let big_endian = platform == Platform::WiiU;
+    let mut out = Vec::new();
+
+    push_word(&mut out, u32::from(V15), big_endian);
+    push_word(&mut out, 0xffff_ffff, big_endian);
+    push_word(&mut out, 1, big_endian);
+    for (hash, value) in records {
+        push_word(&mut out, *hash, big_endian);
+        push_word(&mut out, *value, big_endian);
+    }
+    for (hash, text, chunks) in strings {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.resize(chunks * 4, 0);
+        for chunk in bytes.chunks(4) {
+            push_word(&mut out, *hash, big_endian);
+            out.extend_from_slice(chunk);
+        }
+    }
+    push_word(&mut out, 0xffff_ffff, big_endian);
+
+    out
+}
+
+#[test]
+fn cli_shows_what_the_save_select_screen_shows() {
+    let temporary = TestDirectory::new();
+    let input = temporary.path().join("save");
+    make_save(&input, false);
+    fs::create_dir_all(input.join("1")).unwrap();
+    fs::write(
+        input.join("1/game_data.sav"),
+        record_table(V15, Platform::WiiU, &[(0xaaaa, 7)]),
+    )
+    .unwrap();
+
+    // Slot 1 carries the manual-save flag and a place name; slot 0 has no
+    // caption.sav at all, so its columns must stay empty instead of guessed.
+    fs::write(
+        input.join("1/caption.sav"),
+        caption_table(
+            Platform::WiiU,
+            &[
+                (0x0ba7_cf40, 1_792_679_016),
+                (0xa067_8286, 8661),
+                (0xe512_56e2, 0),
+                (0x4acb_5004, 0),
+            ],
+            &[(0xf26f_1a02, "MapArea_HyruleForest", 24)],
+        ),
+    )
+    .unwrap();
+
+    let dry_run = ProcessCommand::new(env!("CARGO_BIN_EXE_botw-convert"))
+        .arg("--dry-run")
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(dry_run.status.success());
+    let stdout = String::from_utf8_lossy(&dry_run.stdout);
+
+    assert!(stdout.contains("normal manual"), "{stdout}");
+    assert!(stdout.contains("2026-10-22 14:23"), "{stdout}");
+    assert!(stdout.contains("144:21"), "{stdout}");
+    assert!(stdout.contains("Hyrule Forest"), "{stdout}");
+    assert!(
+        stdout.contains("Saved"),
+        "header should list the column: {stdout}"
+    );
+}

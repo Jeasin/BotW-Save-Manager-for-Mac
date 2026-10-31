@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+pub mod caption;
 pub mod cli;
 pub mod convert;
 pub mod error;
@@ -7,6 +8,7 @@ pub mod platform;
 pub mod records;
 pub mod save;
 
+pub use caption::Caption;
 pub use error::{Error, Result};
 pub use platform::Platform;
 pub use save::{

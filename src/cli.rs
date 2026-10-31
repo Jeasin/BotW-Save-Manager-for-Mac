@@ -49,6 +49,13 @@ pub const HELP: &str = concat!(
     "    A version this build has no field list for is refused unless\n",
     "    --allow-unsupported (downgrade anyway) or --drop-incompatible (leave the\n",
     "    slot out) is given.\n",
+    "\n",
+    "Slots:\n",
+    "    Each slot row also shows what the save-select screen shows, read from\n",
+    "    the slot's caption.sav: when the game wrote it, the play time of that\n",
+    "    file, the region, and whether it is the manual save or an autosave.\n",
+    "    Normal mode keeps one manual save and five autosaves, Master Mode one of\n",
+    "    each. Times are the reading of the game's own clock.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]

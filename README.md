@@ -23,6 +23,7 @@
 - 未知游戏版本默认拒绝转换，可用显式开关放行
 - 区分 v1.0 – v1.9，说明每个版本的平台限制
 - **Switch → Wii U 时会自动降级**：把 v1.6 / v1.8-v1.9 存档里 Wii U 不认识的字段丢掉、头部改回 v1.5，使它变成 Wii U 能读的记录集
+- 逐槽位列出读档界面的信息：写入时刻、游玩时长、地区，以及这一档是普通/大师模式、手动还是自动（读自 `caption.sav`）
 
 ## 构建
 
@@ -86,15 +87,15 @@ Target   : Wii U
 Output   : /Users/me/Downloads/202610311719-backup-astris-002-wiiu
 Files    : 69 .sav (8 slots, 52 trackers, 8 captions, 1 option)
 
-Slot  Stored    Version        Bytes  Action
-0     Switch    v1.5         1027208  convert to Wii U
-1     Switch    v1.5         1027208  convert to Wii U
-2     Switch    v1.5         1027208  convert to Wii U
-3     Switch    v1.5         1027208  convert to Wii U
-4     Wii U     v1.6         1027216  keep, drop newer fields
-5     Wii U     v1.6         1027216  keep, drop newer fields
-6     Switch    v1.8/v1.9    1027248  convert to Wii U, drop newer fields
-7     Switch    v1.8/v1.9    1027248  convert to Wii U, drop newer fields
+Slot  Stored  Version      Bytes    Saved                Play  Kind           Place             Action
+0     Switch  v1.5         1027208  2026-06-07 13:58   141:05  normal auto    Central Hyrule    convert to Wii U
+1     Switch  v1.5         1027208  2026-06-07 14:04   117:28  normal auto    Eldin Canyon      convert to Wii U
+2     Switch  v1.5         1027208  2026-06-07 14:06   156:54  normal auto    Eldin Canyon      convert to Wii U
+3     Switch  v1.5         1027208  2026-05-16 21:04    88:38  normal manual  West Hateru       convert to Wii U
+4     Wii U   v1.6         1027216  2025-02-04 19:05   103:07  normal auto    Central Hyrule    keep + downgrade
+5     Wii U   v1.6         1027216  2025-02-04 19:07    82:23  normal auto    Hebura Mountains  keep + downgrade
+6     Switch  v1.8/v1.9    1027248  2026-10-22 14:23   157:23  master auto    East Hateru       convert + downgrade
+7     Switch  v1.8/v1.9    1027248  2026-10-21 16:55   141:13  master manual  East Hateru       convert + downgrade
 warning: 4 slot(s) use a save format newer than the Wii U release (4 v1.6, 5 v1.6,
          6 v1.8/v1.9, 7 v1.8/v1.9); their extra fields are dropped and the header
          is rewritten to v1.5
@@ -116,11 +117,39 @@ Done. Converted 65 .sav to Wii U format.
 | `Slot` | 槽位目录名，即 `game_data.sav` 所在的文件夹 |
 | `Stored` | 该文件**自身头部**显示的平台，可能和整个存档不一致 |
 | `Version` | 从文件头读出的游戏版本 |
-| `Action` | `convert` 翻转字节序、`keep` 原样复制、`drop` 不写入输出、`BLOCKED` 无法转换；带 `drop newer fields` 表示同时降级 |
+| `Saved` | 该档写入的时刻，读自该槽的 `caption.sav` |
+| `Play` | 该档累计游玩时长（`小时:分钟`），同样来自 `caption.sav` |
+| `Kind` | `normal` / `master` 加 `manual` / `auto`，见下节 |
+| `Place` | 存档时的地区名（`MapArea_*` 去掉前缀、驼峰断开） |
+| `Action` | `convert` 翻转字节序、`keep` 原样复制、`drop` 不写入输出、`BLOCKED` 无法转换；`+ downgrade` 表示同时降级 |
 
 `--dry-run` 不会因为输出目录已存在而失败，只给出 warning，方便反复预检。
 
 Wii U → Switch 和 Switch → Wii U 使用同一个命令，工具会根据 `option.sav` 自动判断方向。
+
+### 槽位、自动保存与手动保存
+
+一份旷野之息存档固定有 8 个槽位目录 `0`–`7`，它们不是 8 个平级的自由存档位：
+
+- **普通模式 6 个**：1 个手动存档 + 5 个轮换的自动存档
+- **大师模式 2 个**：1 个手动 + 1 个自动
+
+目录名是固定的，游戏只按索引写。**「这一档是手动还是自动」不写在 `game_data.sav` 里**，而是写在每个槽位旁边的 `caption.sav` —— 也就是读档界面上显示的那些信息：
+
+| 字段哈希 | 含义 |
+|---|---|
+| `0x0ba7cf40` | 写入时刻（Unix 时间戳） |
+| `0xa0678286` | 该档游玩时长（分钟） |
+| `0xe51256e2` | `1` = 大师模式 |
+| `0x4acb5004` | `0` = 手动存档，`1` = 自动存档 |
+| `0x46d266b6` | 地点名（每 4 字节一条记录，哈希重复） |
+| `0xf26f1a02` | `MapArea_*` 地区 id |
+
+这几个哈希是在真实存档上对出来的：时间与时长和读档界面一致，两个标志位把 8 个槽切成「普通 6 / 大师 2」，且每个模式正好一个手动档，与官方结构吻合。`caption.sav` 缺失或损坏时，这几列显示 `-`，不影响转换。
+
+`caption.sav` 的字符串块在 Wii U 与 Switch 上**逐字节相同**（不参与字节序翻转），只有数值字段翻转；降级时它的记录数完全不变（v1.5 与 v1.8/v1.9 都是 189 条），只换版本号，这部分是无损的。
+
+`Saved` 打印的是**游戏自己时钟的读数**（按 UTC 渲染）。模拟器把这个时钟设成本机时间，所以在模拟器存档上看到的就是你保存时的钟点；真机存档可能相差一个时区。
 
 ### 选项
 
